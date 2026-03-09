@@ -120,12 +120,12 @@ def _parse_global_config(data: dict, source: str) -> GlobalConfig:
 
     return GlobalConfig(
         trello_api_key=get("trello", "api_key"),
-        trello_api_token=get("trello", "api_token"),
-        trello_board_id=get("trello", "board_id"),
-        ollama_host=get("ollama", "host"),
-        ollama_model=get("ollama", "model"),
-        gmail_oauth_credentials_path=get("gmail_oauth", "credentials_path"),
-        gmail_oauth_token_path=get("gmail_oauth", "token_path"),
+        trello_api_token=get("trello", "token"),
+        trello_board_id=get("trello", "personal_todo_board_id"),
+        ollama_host=get("ollama_endpoint"),
+        ollama_model=get("ollama_model"),
+        gmail_oauth_credentials_path=get("gmail_oauth", "gmail_oauth_credentials_path"),
+        gmail_oauth_token_path=get("gmail_oauth", "gmail_oauth_token_path"),
     )
 
 

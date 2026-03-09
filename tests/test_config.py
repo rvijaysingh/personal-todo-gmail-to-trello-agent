@@ -20,16 +20,14 @@ from src.config_loader import (
 VALID_ENV_CONFIG: dict = {
     "trello": {
         "api_key": "test-api-key",
-        "api_token": "test-api-token",
-        "board_id": "test-board-id",
+        "token": "test-api-token",
+        "personal_todo_board_id": "test-board-id",
     },
-    "ollama": {
-        "host": "http://localhost:11434",
-        "model": "qwen3:8b",
-    },
+    "ollama_endpoint": "http://localhost:11434",
+    "ollama_model": "qwen3:8b",
     "gmail_oauth": {
-        "credentials_path": "/path/to/credentials.json",
-        "token_path": "/path/to/token.json",
+        "gmail_oauth_credentials_path": "/path/to/credentials.json",
+        "gmail_oauth_token_path": "/path/to/token.json",
     },
 }
 
@@ -163,14 +161,14 @@ def test_load_config_missing_trello_section_raises(tmp_path: Path) -> None:
         load_config(str(env_file), str(agent_file))
 
 
-def test_load_config_missing_ollama_section_raises(tmp_path: Path) -> None:
-    bad_env = {k: v for k, v in VALID_ENV_CONFIG.items() if k != "ollama"}
+def test_load_config_missing_ollama_endpoint_raises(tmp_path: Path) -> None:
+    bad_env = {k: v for k, v in VALID_ENV_CONFIG.items() if k != "ollama_endpoint"}
     env_file = tmp_path / ".env.json"
     agent_file = tmp_path / "agent_config.json"
     write_json(env_file, bad_env)
     write_json(agent_file, VALID_AGENT_CONFIG)
 
-    with pytest.raises(ConfigError, match="ollama"):
+    with pytest.raises(ConfigError, match="ollama_endpoint"):
         load_config(str(env_file), str(agent_file))
 
 
@@ -191,7 +189,7 @@ def test_load_config_missing_gmail_oauth_section_raises(tmp_path: Path) -> None:
 
 
 def test_load_config_missing_trello_board_id_raises(tmp_path: Path) -> None:
-    bad_trello = {"api_key": "k", "api_token": "t"}  # missing board_id
+    bad_trello = {"api_key": "k", "token": "t"}  # missing personal_todo_board_id
     bad_env = {**VALID_ENV_CONFIG, "trello": bad_trello}
     env_file = tmp_path / ".env.json"
     agent_file = tmp_path / "agent_config.json"
@@ -203,19 +201,18 @@ def test_load_config_missing_trello_board_id_raises(tmp_path: Path) -> None:
 
 
 def test_load_config_missing_ollama_model_raises(tmp_path: Path) -> None:
-    bad_ollama = {"host": "http://localhost:11434"}  # missing model
-    bad_env = {**VALID_ENV_CONFIG, "ollama": bad_ollama}
+    bad_env = {k: v for k, v in VALID_ENV_CONFIG.items() if k != "ollama_model"}
     env_file = tmp_path / ".env.json"
     agent_file = tmp_path / "agent_config.json"
     write_json(env_file, bad_env)
     write_json(agent_file, VALID_AGENT_CONFIG)
 
-    with pytest.raises(ConfigError, match="model"):
+    with pytest.raises(ConfigError, match="ollama_model"):
         load_config(str(env_file), str(agent_file))
 
 
 def test_load_config_missing_credentials_path_raises(tmp_path: Path) -> None:
-    bad_oauth = {"token_path": "/t.json"}  # missing credentials_path
+    bad_oauth = {"gmail_oauth_token_path": "/t.json"}  # missing gmail_oauth_credentials_path
     bad_env = {**VALID_ENV_CONFIG, "gmail_oauth": bad_oauth}
     env_file = tmp_path / ".env.json"
     agent_file = tmp_path / "agent_config.json"

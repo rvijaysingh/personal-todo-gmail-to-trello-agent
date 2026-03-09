@@ -30,22 +30,21 @@ repo.
 Gitignored; never committed. See `config/.env.json.example` for the
 full template with placeholder values.
 
-The file uses a nested JSON structure:
+The file uses a mixed structure — `trello` and `gmail_oauth` are nested objects,
+while Ollama settings are top-level keys:
 
 ```json
 {
   "trello": {
-    "api_key":   "<your-trello-api-key>",
-    "api_token": "<your-trello-api-token>",
-    "board_id":  "<your-trello-board-id>"
+    "api_key": "<your-trello-api-key>",
+    "token":   "<your-trello-api-token>",
+    "personal_todo_board_id": "<your-trello-board-id>"
   },
-  "ollama": {
-    "host":  "http://localhost:11434",
-    "model": "qwen3:8b"
-  },
+  "ollama_endpoint": "http://localhost:11434",
+  "ollama_model": "qwen3:8b",
   "gmail_oauth": {
-    "credentials_path": "<absolute-path-to-credentials.json>",
-    "token_path":       "<absolute-path-to-token.json>"
+    "gmail_oauth_credentials_path": "<absolute-path-to-credentials.json>",
+    "gmail_oauth_token_path":       "<absolute-path-to-token.json>"
   }
 }
 ```
@@ -53,12 +52,12 @@ The file uses a nested JSON structure:
 | Field path | Type | Description | Example |
 |-----------|------|-------------|---------|
 | `trello.api_key` | string | Trello Power-Up API key from https://trello.com/power-ups/admin | `"a1b2c3d4..."` |
-| `trello.api_token` | string | Trello user token generated from the API key page | `"xxxxxxxxxxxx..."` |
-| `trello.board_id` | string | ID of the Trello board containing the target list (visible in board URL) | `"oNIV6Mcq"` |
-| `ollama.host` | string | Base URL of the local Ollama server | `"http://localhost:11434"` |
-| `ollama.model` | string | Model name to use for card name generation | `"qwen3:8b"` |
-| `gmail_oauth.credentials_path` | string | Absolute path to `credentials.json` downloaded from Google Cloud Console | `"C:/secrets/credentials.json"` |
-| `gmail_oauth.token_path` | string | Absolute path where the OAuth2 token file will be stored after first auth | `"C:/secrets/token.json"` |
+| `trello.token` | string | Trello user token generated from the API key page | `"xxxxxxxxxxxx..."` |
+| `trello.personal_todo_board_id` | string | ID of the Trello board containing the target list (visible in board URL) | `"oNIV6Mcq"` |
+| `ollama_endpoint` | string | Base URL of the local Ollama server | `"http://localhost:11434"` |
+| `ollama_model` | string | Model name to use for card name generation | `"qwen3:8b"` |
+| `gmail_oauth.gmail_oauth_credentials_path` | string | Absolute path to `credentials.json` downloaded from Google Cloud Console | `"C:/secrets/credentials.json"` |
+| `gmail_oauth.gmail_oauth_token_path` | string | Absolute path where the OAuth2 token file will be stored after first auth | `"C:/secrets/token.json"` |
 
 All fields are required. The agent exits at startup with a message naming
 the exact missing field path (e.g., `"Missing required field 'trello.api_key'"`).
