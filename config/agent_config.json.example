@@ -1,0 +1,10 @@
+{
+  "trello_list_id": "<id-of-backlog-to-triage-list>",
+  "first_run_lookback_days": 7,
+  "gmail_processed_label": "Agent/Added-To-Trello",
+  "trello_description_max_chars": 16384,
+  "processing_delay_seconds": 1,
+  "dedup_enabled": true,
+  "log_file": "logs/agent_run.log",
+  "db_path": "data/emails_processed.db"
+}

@@ -1,0 +1,40 @@
+# Machine-local config (contains secrets)
+config/agent_config.json
+config/.env.json
+
+# Runtime data including SQLite database and logs
+data/
+logs/
+
+# OAuth tokens
+token.json
+credentials.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+*.egg
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
