@@ -22,9 +22,11 @@ Windows Task Scheduler.
 
 ## Architecture Constraints
 - Runtime: Windows 10/11 server, Python 3.13
-- LLM: Ollama running locally at http://localhost:11434
+- LLM (primary): Anthropic API (Claude Haiku 4.5) for generating
+  actionable card names from email content. API key in global config.
+- LLM (fallback): Ollama running locally at http://localhost:11434
   (model name specified in global config, currently qwen3:8b).
-  Used only for generating actionable card names from email content.
+  Used if Anthropic API is unavailable or not configured.
 - Gmail: Google API Python client with OAuth2 for reading emails
   and applying labels. NOT IMAP.
 - Trello: REST API (key + token auth) for card creation.
@@ -67,7 +69,7 @@ gmail-to-trello-agent/
     gmail_client.py            # Gmail API: fetch starred, apply label
     trello_client.py           # Trello API: create card, check for duplicates
     card_builder.py            # Builds card name (LLM or fallback) and description
-    llm_client.py              # Ollama API wrapper with health check
+    llm_client.py              # LLM wrapper: Anthropic API (primary), Ollama (fallback)
     db.py                      # SQLite: emails_processed table, dedup queries
     orchestrator.py            # Main entry point and pipeline coordinator
     models.py                  # Shared data structures (EmailRecord,
@@ -101,6 +103,7 @@ Two config sources plus LLM prompts:
    - trello_api_key
    - trello_api_token
    - trello_board_id (the Todo board: oNIV6Mcq)
+   - anthropic_api_key (optional — if missing, falls back to Ollama)
    - ollama_host (default: http://localhost:11434)
    - ollama_model (default: qwen3:8b)
    - gmail_oauth_credentials_path (path to credentials.json)
@@ -154,15 +157,17 @@ Step 1 - Extract Email Data:
 - If the email is a thread, extract only the most recent message
   body, not the full thread history.
 
-Step 2 - Generate Card Name:
-- Send subject + first 500 chars of body to Ollama/Qwen via the
-  prompts/card_name.md template.
-- The LLM should return a short (under 100 chars), actionable task
-  name. Example: email subject "Re: Q3 Board Deck - Final Review"
+Step 2 - Generate Card Name (three-tier fallback):
+- Try Anthropic API first (Haiku 4.5): send subject + first 500
+  chars of body via the prompts/card_name.md template. The LLM
+  should return a short (under 100 chars), actionable task name.
+  Example: email subject "Re: Q3 Board Deck - Final Review"
   becomes "Review and approve Q3 board deck".
-- If Ollama is unreachable or errors: fall back to the email subject
-  line, cleaned up (strip "Re:", "Fwd:", etc., trim whitespace).
-- Log whether the card name was LLM-generated or fallback.
+- If Anthropic fails (no API key, network error, rate limit):
+  fall back to Ollama/Qwen with the same prompt.
+- If Ollama also fails: fall back to the email subject line,
+  cleaned up (strip "Re:", "Fwd:", etc., trim whitespace).
+- Log the card_name_source: "anthropic", "ollama", or "fallback".
 
 Step 3 - Build Card Description:
 - Line 1: See "[subject]" email from [sender] on [formatted date]
@@ -194,7 +199,7 @@ Step 6 - Post-Processing on Gmail:
 
 Step 7 - Record to Database:
 - Insert a row into emails_processed with all metadata,
-  card_name_source (llm or fallback), trello_card_id,
+  card_name_source (anthropic, ollama, or fallback), trello_card_id,
   trello_card_url, status, and timestamp.
 - On any failure in Steps 5-6, record with the appropriate error
   status and error_message.
@@ -275,16 +280,21 @@ but batch processing many starred emails could hit limits.
 - Mitigation: On 429 responses, implement exponential backoff with
   a maximum of 3 retries before recording the email as failed.
 
+### Anthropic API Unavailable (Likelihood: Low)
+The Anthropic API could be unreachable, rate-limited, or the API
+key could be invalid or missing.
+- Mitigation: Fall back to Ollama for card name generation.
+- Mitigation: Log a warning so it's visible which provider was used.
+
 ### Ollama Unavailable (Likelihood: Medium)
 The Ollama service may not be running, may have crashed, or the
 model may not be loaded.
-- Mitigation: Card creation does NOT depend on Ollama. Only the
-  card name generation uses it.
-- Mitigation: If Ollama is unreachable, fall back to cleaned
-  subject line. Log a warning but continue processing.
-- Mitigation: Check Ollama connectivity once at startup before
-  entering the processing loop. Log a warning if unavailable so
-  the entire run's fallback status is visible at the top of the log.
+- Mitigation: Ollama is the second-tier fallback. If both Anthropic
+  and Ollama fail, fall back to cleaned subject line.
+- Mitigation: Card creation does NOT depend on any LLM. Processing
+  continues regardless.
+- Mitigation: Check Ollama connectivity once at startup. Log a
+  warning if unavailable.
 
 ### Trello API Failure (Likelihood: Low)
 Trello API could be down, return errors, or reject the card
@@ -348,5 +358,3 @@ that would make them difficult later.
   after each run (X emails processed, Y cards created, Z failures).
   The orchestrator already collects run statistics; a notifier
   module can be added later.
-- Alternative LLM providers: Model name and endpoint are in config.
-  No additional abstraction needed.
