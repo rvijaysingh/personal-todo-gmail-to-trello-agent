@@ -19,7 +19,6 @@ from src.gmail_client import (
     _strip_html,
     apply_label,
     fetch_starred_emails,
-    unstar_email,
 )
 
 # ---------------------------------------------------------------------------
@@ -518,31 +517,6 @@ def test_fetch_starred_emails_date_parsed_from_header() -> None:
     results = fetch_starred_emails(svc)
 
     assert "2024-01-01" in results[0].email_date
-
-
-# ---------------------------------------------------------------------------
-# unstar_email
-# ---------------------------------------------------------------------------
-
-
-def test_unstar_email_calls_modify_with_remove_starred() -> None:
-    svc = make_service()
-
-    unstar_email(svc, "msg_001")
-
-    modify_call = svc.users.return_value.messages.return_value.modify.call_args
-    body_arg = modify_call[1]["body"]
-    assert "STARRED" in body_arg["removeLabelIds"]
-    assert modify_call[1]["id"] == "msg_001"
-
-
-def test_unstar_email_uses_correct_user_id() -> None:
-    svc = make_service()
-
-    unstar_email(svc, "msg_001")
-
-    modify_call = svc.users.return_value.messages.return_value.modify.call_args
-    assert modify_call[1]["userId"] == "me"
 
 
 # ---------------------------------------------------------------------------

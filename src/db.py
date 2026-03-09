@@ -24,7 +24,6 @@ CREATE TABLE IF NOT EXISTS emails_processed (
     status TEXT NOT NULL CHECK(status IN (
         'success',
         'failed_trello_create',
-        'failed_gmail_unstar',
         'failed_gmail_label',
         'skipped_dedup'
     )),

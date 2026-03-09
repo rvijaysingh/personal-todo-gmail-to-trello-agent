@@ -358,24 +358,6 @@ def fetch_starred_emails(
     return records
 
 
-def unstar_email(service, message_id: str) -> None:
-    """Remove the STARRED label from a Gmail message.
-
-    Args:
-        service: Authenticated Gmail API service object.
-        message_id: Gmail message ID to unstar.
-
-    Raises:
-        HttpError: If the Gmail API returns an error.
-    """
-    service.users().messages().modify(
-        userId="me",
-        id=message_id,
-        body={"removeLabelIds": ["STARRED"]},
-    ).execute()
-    logger.info("Removed STARRED label from message %s", message_id)
-
-
 def apply_label(service, message_id: str, label_name: str) -> None:
     """Apply a named Gmail label to a message.
 

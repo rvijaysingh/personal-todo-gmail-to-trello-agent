@@ -155,24 +155,7 @@ def _process_email(
 
     logger.info("Trello card created: %s", card_url)
 
-    # Step 6a — Remove Gmail star (keep card if this fails so dedup catches it)
-    try:
-        gmail_client.unstar_email(gmail_svc, email.gmail_message_id)
-    except Exception as exc:
-        logger.error(
-            "Failed to unstar %s: %s", email.gmail_message_id, exc
-        )
-        result = ProcessingResult(
-            gmail_message_id=email.gmail_message_id,
-            status="failed_gmail_unstar",
-            trello_card_id=card_id,
-            trello_card_url=card_url,
-            error_message=str(exc),
-        )
-        db.insert_record(ac.db_path, email, card, result)
-        return result
-
-    # Step 6b — Apply processed label (apply_label logs errors internally;
+    # Step 6 — Apply processed label (apply_label logs errors internally;
     # wrap in try/except as a safety net for unexpected failures)
     try:
         gmail_client.apply_label(

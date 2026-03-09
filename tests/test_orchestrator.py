@@ -80,7 +80,6 @@ def success_result(msg_id: str = "msg_001") -> ProcessingResult:
 _GEN_NAME = "src.card_builder.generate_card_name"
 _BUILD_DESC = "src.card_builder.build_card_description"
 _CREATE_CARD = "src.trello_client.create_card"
-_UNSTAR = "src.gmail_client.unstar_email"
 _APPLY_LABEL = "src.gmail_client.apply_label"
 _INSERT = "src.db.insert_record"
 
@@ -99,7 +98,6 @@ def _run_process_email(
     gen_name_rv=_DEFAULT_CARD_NAME,
     build_desc_rv="Card description.",
     create_card_rv=_DEFAULT_CARD_URL,
-    unstar_side_effect=None,
     apply_label_side_effect=None,
     insert_side_effect=None,
 ):
@@ -128,9 +126,6 @@ def _run_process_email(
             ),
             "create_card": stack.enter_context(
                 patch(_CREATE_CARD, return_value=create_card_rv)
-            ),
-            "unstar": stack.enter_context(
-                patch(_UNSTAR, side_effect=unstar_side_effect)
             ),
             "apply_label": stack.enter_context(
                 patch(_APPLY_LABEL, side_effect=apply_label_side_effect)
@@ -205,11 +200,10 @@ def test_process_email_success_returns_card_url() -> None:
     assert result.trello_card_url == "https://trello.com/c/abc"
 
 
-def test_process_email_success_calls_unstar() -> None:
-    email = make_email(msg_id="msg_xyz")
-    svc = MagicMock()
-    _, mocks = _run_process_email(email=email, svc=svc)
-    mocks["unstar"].assert_called_once_with(svc, "msg_xyz")
+def test_process_email_success_star_is_preserved() -> None:
+    """unstar_email no longer exists — confirm gmail_client has no unstar attribute."""
+    import src.gmail_client as gmail_mod
+    assert not hasattr(gmail_mod, "unstar_email")
 
 
 def test_process_email_success_calls_apply_label() -> None:
@@ -257,7 +251,6 @@ def test_process_email_trello_error_returns_failed_status() -> None:
         stack.enter_context(
             patch(_CREATE_CARD, side_effect=TrelloError("500 error"))
         )
-        stack.enter_context(patch(_UNSTAR))
         stack.enter_context(patch(_APPLY_LABEL))
         stack.enter_context(patch(_INSERT))
         result = _process_email(
@@ -267,23 +260,6 @@ def test_process_email_trello_error_returns_failed_status() -> None:
     assert result.status == "failed_trello_create"
 
 
-def test_process_email_trello_error_does_not_call_unstar() -> None:
-    with ExitStack() as stack:
-        stack.enter_context(patch(_GEN_NAME, return_value=_DEFAULT_CARD_NAME))
-        stack.enter_context(patch(_BUILD_DESC, return_value="desc"))
-        stack.enter_context(
-            patch(_CREATE_CARD, side_effect=TrelloError("API down"))
-        )
-        mock_unstar = stack.enter_context(patch(_UNSTAR))
-        stack.enter_context(patch(_APPLY_LABEL))
-        stack.enter_context(patch(_INSERT))
-        _process_email(
-            make_email(), make_gc(), make_ac(), MagicMock(), lambda s, b, t: None, "t"
-        )
-
-    mock_unstar.assert_not_called()
-
-
 def test_process_email_trello_error_inserts_db_record() -> None:
     with ExitStack() as stack:
         stack.enter_context(patch(_GEN_NAME, return_value=_DEFAULT_CARD_NAME))
@@ -291,7 +267,6 @@ def test_process_email_trello_error_inserts_db_record() -> None:
         stack.enter_context(
             patch(_CREATE_CARD, side_effect=TrelloError("API down"))
         )
-        stack.enter_context(patch(_UNSTAR))
         stack.enter_context(patch(_APPLY_LABEL))
         mock_insert = stack.enter_context(patch(_INSERT))
         _process_email(
@@ -308,7 +283,6 @@ def test_process_email_trello_error_error_message_in_result() -> None:
         stack.enter_context(
             patch(_CREATE_CARD, side_effect=TrelloError("Rate limited"))
         )
-        stack.enter_context(patch(_UNSTAR))
         stack.enter_context(patch(_APPLY_LABEL))
         stack.enter_context(patch(_INSERT))
         result = _process_email(
@@ -316,46 +290,6 @@ def test_process_email_trello_error_error_message_in_result() -> None:
         )
 
     assert "Rate limited" in result.error_message
-
-
-# ---------------------------------------------------------------------------
-# _process_email — unstar failure
-# ---------------------------------------------------------------------------
-
-
-def test_process_email_unstar_failure_returns_failed_gmail_unstar() -> None:
-    result, _ = _run_process_email(
-        unstar_side_effect=Exception("Network error")
-    )
-    assert result.status == "failed_gmail_unstar"
-
-
-def test_process_email_unstar_failure_preserves_card_id() -> None:
-    result, _ = _run_process_email(
-        unstar_side_effect=Exception("Network error")
-    )
-    assert result.trello_card_id == "card_abc"
-
-
-def test_process_email_unstar_failure_preserves_card_url() -> None:
-    result, _ = _run_process_email(
-        unstar_side_effect=Exception("Network error")
-    )
-    assert result.trello_card_url == "https://trello.com/c/abc"
-
-
-def test_process_email_unstar_failure_inserts_db_record() -> None:
-    _, mocks = _run_process_email(
-        unstar_side_effect=Exception("Network error")
-    )
-    mocks["insert"].assert_called_once()
-
-
-def test_process_email_unstar_failure_does_not_call_apply_label() -> None:
-    _, mocks = _run_process_email(
-        unstar_side_effect=Exception("Network error")
-    )
-    mocks["apply_label"].assert_not_called()
 
 
 # ---------------------------------------------------------------------------
