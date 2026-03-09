@@ -171,9 +171,13 @@ Step 2 - Generate Card Name (three-tier fallback):
 - Log the card_name_source: "anthropic", "ollama", or "fallback".
 
 Step 3 - Build Card Description:
-- Line 1: See "[subject]" email from [sender] on [formatted date]
-- Line 2: blank
-- Line 3 onward: email body
+- Line 1 (bullet): - See "[subject]" email from [sender] on [formatted date]
+- Additional metadata bullets may be appended here by future agents
+  (e.g., "- Possible duplicate of: [card link]"). The card description
+  format is designed to support this.
+- Separator line: ------
+- Blank line
+- Email body
 - If total description exceeds trello_description_max_chars (16384):
   truncate the body and append on a new line:
   "[Email body truncated -- original exceeds Trello's 16,384
@@ -359,3 +363,11 @@ that would make them difficult later.
   after each run (X emails processed, Y cards created, Z failures).
   The orchestrator already collects run statistics; a notifier
   module can be added later.
+- Duplicate/related card detection: A separate agent will use local
+  embeddings (ChromaDB + Sentence Transformers) to find similar cards
+  across the board, with Anthropic (Haiku) for judgment calls. That
+  agent may write back to cards created by this agent, appending a
+  "- Possible duplicate of: [card link]" bullet to the description.
+  The card description format (bulleted metadata section above
+  separator, body below) is designed to support this. This agent
+  should not import or depend on the duplicate detection agent.

@@ -36,8 +36,10 @@ schedule via Windows Task Scheduler.
        |
        v
   card_builder.build_card_description()
-  - Header: See "<subject>" email from <sender> on <date>
-  - Full email body (truncated with notice if > 16,384 chars)
+  - Line 1: - See "<subject>" email from <sender> on <date>
+  - Line 2: ------  (separator; future bullet points go above this)
+  - Line 3: blank
+  - Line 4+: full email body (truncated with notice if > 16,384 chars)
        |
        v
   trello_client.create_card()
@@ -129,7 +131,11 @@ card IDs, error). No logic; imported by all other modules.
    `(name: str, source: "anthropic" | "ollama" | "fallback")`.
 
 3. **Description** — `card_builder.build_card_description(email)` returns a
-   formatted string ready to POST to Trello.
+   formatted string ready to POST to Trello. Format: a bullet-point metadata
+   line (`- See "..." email from ... on ...`), a `------` separator line, a
+   blank line, then the email body. The gap between the bullet and separator
+   is designed to accommodate future metadata bullets (e.g. duplicate-card
+   links). Body is truncated with a notice if the total exceeds 16,384 chars.
 
 4. **Card creation** — `trello_client.create_card(...)` returns
    `(card_id, card_url)` which flow into the `ProcessingResult`.
