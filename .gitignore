@@ -1,6 +1,7 @@
 # Machine-local config (contains secrets)
 config/agent_config.json
 config/.env.json
+.env.json
 
 # Runtime data including SQLite database and logs
 data/

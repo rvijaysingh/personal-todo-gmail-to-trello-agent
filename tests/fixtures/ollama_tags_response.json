@@ -1,0 +1,10 @@
+{
+  "models": [
+    {
+      "name": "qwen3:8b",
+      "model": "qwen3:8b",
+      "size": 5000000000,
+      "digest": "abc123def456"
+    }
+  ]
+}

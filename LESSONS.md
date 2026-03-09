@@ -1,26 +1,36 @@
-# LESSONS.md — Operational Findings
+# Lessons Learned
 
-This file captures real-world debugging findings, API quirks, and
-known patterns discovered during development and production runs.
+Operational findings from real-world usage of this agent. Update this file
+whenever you discover an API quirk, fix a subtle bug, or tune a parameter
+that noticeably changed behaviour. Read this before making changes.
 
-Read this before making any changes to the codebase.
+---
 
-## Gmail API
+## Gmail API Quirks
 
-<!-- Add findings about Gmail API quirks here -->
+*(Empty — add findings here as they are discovered in production.)*
 
-## Trello API
+---
 
-<!-- Add findings about Trello API quirks here -->
+## Trello API Quirks
 
-## OAuth2 / Auth
+*(Empty — add findings here as they are discovered in production.)*
 
-<!-- Add findings about OAuth2 token behavior here -->
+---
 
-## LLM / Ollama
+## Ollama / LLM Notes
 
-<!-- Add findings about Ollama/qwen3:8b behavior here -->
+*(Empty — add prompt tuning notes and model behaviour observations here.)*
 
-## Encoding / Parsing
+---
 
-<!-- Add findings about email body encoding or parsing issues here -->
+## OAuth2 Token Behaviour
+
+*(Empty — add observations about token refresh, expiry patterns, and
+re-authentication triggers here.)*
+
+---
+
+## Known Issues
+
+*(Empty — add reproducible bugs or edge cases being tracked here.)*

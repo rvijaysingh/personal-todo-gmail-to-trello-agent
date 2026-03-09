@@ -1,0 +1,9 @@
+{
+  "labels": [
+    {"id": "INBOX",   "name": "INBOX",   "type": "system"},
+    {"id": "STARRED", "name": "STARRED", "type": "system"},
+    {"id": "SENT",    "name": "SENT",    "type": "system"},
+    {"id": "Label_001", "name": "Agent/Added-To-Trello", "type": "user"},
+    {"id": "Label_002", "name": "Agent/Failed",          "type": "user"}
+  ]
+}

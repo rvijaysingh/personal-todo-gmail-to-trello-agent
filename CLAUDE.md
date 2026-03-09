@@ -191,8 +191,10 @@ Step 7 - Record to Database:
   status and error_message.
 
 ### Processing Order
-- Process emails oldest first (by email date) so the Trello list
-  reads chronologically top-to-bottom.
+- Process emails oldest first (by email date).
+- Cards are placed at the top of the list (pos="top"), so after a
+  batch completes, the newest email's card is at the top and the
+  oldest is furthest down. Most recent items are always most visible.
 
 ### Crash Safety
 - Each email is fully processed (Trello card created, star removed,

@@ -1,0 +1,20 @@
+[
+  {
+    "id": "list_inbox_001",
+    "name": "Inbox",
+    "closed": false,
+    "idBoard": "board_test_001"
+  },
+  {
+    "id": "list_backlog_001",
+    "name": "Backlog to Triage (incl. Gmail)",
+    "closed": false,
+    "idBoard": "board_test_001"
+  },
+  {
+    "id": "list_today_001",
+    "name": "Today",
+    "closed": false,
+    "idBoard": "board_test_001"
+  }
+]
