@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS emails_processed (
     sender TEXT,
     email_date TEXT,
     generated_card_name TEXT,
-    card_name_source TEXT CHECK(card_name_source IN ('llm', 'fallback')),
+    card_name_source TEXT CHECK(card_name_source IN ('anthropic', 'ollama', 'fallback')),
     trello_card_id TEXT,
     trello_card_url TEXT,
     status TEXT NOT NULL CHECK(status IN (

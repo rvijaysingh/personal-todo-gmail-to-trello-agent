@@ -3,9 +3,10 @@
 ## Purpose
 
 An automated agent that monitors Gmail for starred emails, generates an
-actionable Trello card for each one using a local LLM (with a subject-line
-fallback), then cleans up the email by removing the star and applying a
-processed label. Runs unattended on a schedule via Windows Task Scheduler.
+actionable Trello card for each one using an LLM (Anthropic Haiku as primary,
+local Ollama as fallback, subject-line as final fallback), then applies a
+processed label to the email. Stars are preserved. Runs unattended on a
+schedule via Windows Task Scheduler.
 
 ---
 
@@ -13,26 +14,29 @@ processed label. Runs unattended on a schedule via Windows Task Scheduler.
 
 ```
   Gmail API
-  (starred emails, oldest first)
+  (starred, not yet labeled "Agent/Added-To-Trello", oldest first)
        |
        v
   gmail_client.fetch_starred_emails()
   - OAuth2 auth (token auto-refresh)
+  - Query: is:starred -label:Agent/Added-To-Trello [newer_than:Nd]
   - MIME body extraction (plain text preferred; HTML fallback)
   - Sorted by internalDate ascending
        |
        v
   orchestrator: dedup check (SQLite)
   - Skip if gmail_message_id already has status='success'
+  - Secondary safety net; Gmail label exclusion is the primary guard
        |
        v
   card_builder.generate_card_name()
-  - llm_client.generate_card_name() via Ollama /api/generate
-  - Fallback: _clean_subject() strips Re:/Fwd: prefixes
+  - Tier 1: llm_client._anthropic_generate_card_name() via Anthropic API
+  - Tier 2: llm_client._ollama_generate_card_name() via Ollama /api/generate
+  - Tier 3: _clean_subject() strips Re:/Fwd: prefixes
        |
        v
   card_builder.build_card_description()
-  - Header line: See "<subject>" email from <sender> on <date>
+  - Header: See "<subject>" email from <sender> on <date>
   - Full email body (truncated with notice if > 16,384 chars)
        |
        v
@@ -42,8 +46,8 @@ processed label. Runs unattended on a schedule via Windows Task Scheduler.
        |
        v
   Gmail post-processing
-  - gmail_client.unstar_email()
   - gmail_client.apply_label("Agent/Added-To-Trello")
+  - Star is preserved (intentional — label is the processed indicator)
        |
        v
   db.insert_record()
@@ -56,10 +60,11 @@ processed label. Runs unattended on a schedule via Windows Task Scheduler.
 ## Module Responsibilities
 
 **`src/orchestrator.py`** — Main entry point. Owns the startup sequence
-(load config, init DB, health-check Ollama, validate Trello list, detect
-first/subsequent run) and the per-email processing loop. Delegates every
-domain concern to a dedicated module. Collects run statistics and logs a
-summary on completion. No external API calls of its own.
+(load config, init DB, log LLM provider availability, health-check Ollama,
+validate Trello list, detect first/subsequent run) and the per-email
+processing loop. Delegates every domain concern to a dedicated module.
+Collects run statistics and logs a summary on completion. No external API
+calls of its own.
 
 **`src/config_loader.py`** — Loads and validates the two-tier configuration:
 a global `.env.json` (secrets, shared across agents) and a local
@@ -70,16 +75,18 @@ environment variable with a sensible repo-local default.
 
 **`src/gmail_client.py`** — Wraps the Google API Python client for Gmail.
 Handles OAuth2 token refresh automatically; provides a `--reauth` CLI flag
-for when the token has expired. Fetches starred messages, extracts the body
-from nested MIME parts (prefers `text/plain`; strips HTML tags as fallback),
-removes stars, and applies labels. All operations use the `gmail.modify`
-scope. Depends on: `google-api-python-client`, `google-auth-oauthlib`.
+for when the token has expired. Fetches starred messages (excluding those
+already labeled as processed), extracts the body from nested MIME parts
+(prefers `text/plain`; strips HTML tags as fallback), and applies the
+processed label. Stars are intentionally not removed. All operations use
+the `gmail.modify` scope. Depends on: `google-api-python-client`,
+`google-auth-oauthlib`.
 
 **`src/trello_client.py`** — Thin wrapper over the Trello REST API using
 `requests`. Exposes `validate_list` (startup sanity check) and `create_card`
 (always posts with `pos="top"` for correct ordering). Raises `TrelloError`
 on any HTTP error or connection failure so the orchestrator can record the
-failure and preserve the Gmail star for retry. Depends on: `requests`.
+failure and leave the email unprocessed for retry. Depends on: `requests`.
 
 **`src/card_builder.py`** — Pure functions for building card content from an
 `EmailRecord`. `generate_card_name` calls the `LlmClientFn` callable and
@@ -87,11 +94,13 @@ falls back to `_clean_subject` on any failure. `build_card_description`
 assembles the header line and full body, truncating with a notice if the
 total exceeds Trello's 16,384-character limit. No external dependencies.
 
-**`src/llm_client.py`** — Ollama API wrapper using only `urllib.request`
-(no `requests` dependency). `health_check` pings `/api/tags` at startup.
-`generate_card_name` sends the filled prompt template to `/api/generate`,
-strips `<think>` tags produced by qwen3's reasoning mode, and returns
-`(name, "llm")` or `None` on any failure. Depends on: stdlib only.
+**`src/llm_client.py`** — Three-tier LLM wrapper. `health_check` pings
+Ollama's `/api/tags` at startup. `generate_card_name` attempts:
+(1) Anthropic API (`claude-haiku-4-5-20251001`) if `anthropic_api_key` is
+configured; (2) Ollama `/api/generate` as local fallback; returning
+`(name, "anthropic")`, `(name, "ollama")`, or `None` to signal fallback
+to the subject line. Strips `<think>` tags from reasoning-model output.
+Depends on: `anthropic` SDK (tier 1), stdlib `urllib.request` (tier 2).
 
 **`src/db.py`** — SQLite processing ledger using `sqlite3` stdlib. Creates
 the `emails_processed` table on first run. Provides `insert_record` (uses
@@ -108,13 +117,16 @@ card IDs, error). No logic; imported by all other modules.
 ## Data Flow
 
 1. **Fetch** — `gmail_client.fetch_starred_emails()` returns a list of
-   `EmailRecord` objects sorted oldest-first. Each record holds the Gmail
-   message ID, subject, sender, date, and decoded plain-text body.
+   `EmailRecord` objects sorted oldest-first. The Gmail query is
+   `is:starred -label:Agent/Added-To-Trello [newer_than:Nd]`, ensuring
+   already-processed emails are excluded at the API level. Each record
+   holds the Gmail message ID, subject, sender, date, and decoded body.
 
 2. **Name generation** — `card_builder.generate_card_name(email, llm_fn,
    template)` receives the `EmailRecord` and an `LlmClientFn` callable
-   (created with `functools.partial` binding the `GlobalConfig`). Returns
-   `(name: str, source: "llm" | "fallback")`.
+   (created with `functools.partial` binding the `GlobalConfig` and
+   `anthropic_api_key`). Returns
+   `(name: str, source: "anthropic" | "ollama" | "fallback")`.
 
 3. **Description** — `card_builder.build_card_description(email)` returns a
    formatted string ready to POST to Trello.
@@ -122,15 +134,16 @@ card IDs, error). No logic; imported by all other modules.
 4. **Card creation** — `trello_client.create_card(...)` returns
    `(card_id, card_url)` which flow into the `ProcessingResult`.
 
-5. **Post-processing** — `gmail_client.unstar_email` and `apply_label` mark
-   the email as done in Gmail. If unstar fails, the card URL is still
-   preserved in the `ProcessingResult` so the next run's dedup check
-   prevents a duplicate card.
+5. **Post-processing** — `gmail_client.apply_label` marks the email as
+   processed in Gmail. The star is preserved so the user retains visibility
+   of which emails triggered card creation. If label application fails,
+   the DB records `status='failed_gmail_label'` and the Gmail label
+   exclusion in the next run's query prevents duplicate processing because
+   the label was not applied (the email will be re-queried and re-processed).
 
 6. **Record** — `db.insert_record(db_path, email, card, result)` persists the
    full outcome. The `ProcessingResult.status` is one of:
-   `success`, `failed_trello_create`, `failed_gmail_unstar`,
-   `failed_gmail_label`, `skipped_dedup`.
+   `success`, `failed_trello_create`, `failed_gmail_label`, `skipped_dedup`.
 
 ---
 
@@ -138,7 +151,7 @@ card IDs, error). No logic; imported by all other modules.
 
 ### OAuth2 over IMAP for Gmail access
 
-**Context:** The agent needs to read emails, remove stars, and apply labels.
+**Context:** The agent needs to read emails and apply Gmail labels.
 IMAP could read and flag messages but cannot apply Gmail labels (a
 Gmail-specific concept). Managing OAuth2 credentials adds setup friction.
 
@@ -150,6 +163,53 @@ Gmail-specific concept). Managing OAuth2 credentials adds setup friction.
 processed-label feature) and aligns with Google's recommended approach.
 Sacrifices: initial setup requires a Google Cloud project and an OAuth
 consent flow. Revisit if Google deprecates the current credential model.
+
+---
+
+### Gmail label as the primary processed indicator (stars preserved)
+
+**Context:** The original design removed the Gmail star after creating the
+Trello card. This made the star the work queue, but created a partial-failure
+risk: if the star removal failed after card creation, the next run would
+create a duplicate card (caught only by the SQLite dedup check).
+
+**Options considered:** Remove star after processing (original); keep star,
+use Gmail label as processed indicator.
+
+**Chosen:** Preserve the star; apply the `Agent/Added-To-Trello` label as the
+sole processed indicator.
+
+**Tradeoffs:** The Gmail query (`-label:Agent/Added-To-Trello`) excludes
+already-processed emails at the API level, eliminating the duplicate-card
+risk without relying on the SQLite dedup check as the first line of defense.
+Users retain visibility of which emails triggered card creation (the star
+remains). Sacrifices: the inbox star count grows over time rather than being
+cleared by the agent. The SQLite dedup check is now a secondary safety net
+rather than the primary guard. Revisit if users find the retained stars
+confusing.
+
+---
+
+### Anthropic API as primary LLM, Ollama as local fallback
+
+**Context:** Card name quality is important — a vague subject line like
+"Re: Re: Follow up" produces a poor Trello card name. A local Ollama
+instance is convenient but slow to load and occasionally unavailable.
+
+**Options considered:** Ollama only; Anthropic API only; three-tier fallback
+(Anthropic → Ollama → subject line).
+
+**Chosen:** Three-tier fallback: Anthropic Haiku 4.5 as primary (when API key
+configured), Ollama as local backup, subject-line cleanup as final fallback.
+
+**Tradeoffs:** Anthropic API produces higher-quality card names and responds
+faster than a locally-loaded model. The `anthropic_api_key` field in
+`agent_config.json` is optional — omitting it silently degrades to
+Ollama-only. Sacrifices: card name generation incurs API cost when Anthropic
+is used. The Ollama fallback provides offline resilience. The subject-line
+fallback ensures card creation never blocks on LLM availability. Revisit the
+model choice (`claude-haiku-4-5-20251001`) when newer Haiku versions are
+released.
 
 ---
 
@@ -183,11 +243,10 @@ of N; process strictly one at a time.
 next.
 
 **Tradeoffs:** Maximises crash safety — if the agent is killed mid-run, every
-completed email has its Trello card created and its star removed. Unprocessed
-emails remain starred and are picked up on the next run. The dedup check
-handles the edge case where the card was created but the star removal failed.
-Sacrifices: slower for large batches. Configurable `processing_delay_seconds`
-makes rate limiting explicit.
+completed email has its Trello card created and its label applied. Unprocessed
+emails remain without the label and are picked up on the next run. The SQLite
+dedup check provides a secondary safety net. Sacrifices: slower for large
+batches. Configurable `processing_delay_seconds` makes rate limiting explicit.
 
 ---
 

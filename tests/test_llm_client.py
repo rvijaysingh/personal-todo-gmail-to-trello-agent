@@ -6,10 +6,16 @@ import urllib.error
 from io import BytesIO
 from unittest.mock import MagicMock, patch
 
+import anthropic as anthropic_sdk
 import pytest
 
 from src.config_loader import GlobalConfig
-from src.llm_client import _clean_llm_response, generate_card_name, health_check, warmup
+from src.llm_client import (
+    _anthropic_generate_card_name,
+    _clean_llm_response,
+    generate_card_name,
+    health_check,
+)
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -27,6 +33,8 @@ SAMPLE_CONFIG = GlobalConfig(
 
 CARD_NAME_TEMPLATE = "Subject: {{subject}}\n\nBody:\n{{body_preview}}\n\nTask name:"
 
+FAKE_ANTHROPIC_KEY = "sk-ant-test-key"
+
 
 def _make_urlopen_mock(response_data: dict | str) -> MagicMock:
     """Return a mock that acts as the return value of urllib.request.urlopen.
@@ -43,6 +51,23 @@ def _make_urlopen_mock(response_data: dict | str) -> MagicMock:
     mock_resp.__enter__ = MagicMock(return_value=mock_resp)
     mock_resp.__exit__ = MagicMock(return_value=False)
     return mock_resp
+
+
+def _make_anthropic_response(text: str) -> MagicMock:
+    """Build a mock Anthropic messages.create() response."""
+    block = MagicMock()
+    block.type = "text"
+    block.text = text
+    response = MagicMock()
+    response.content = [block]
+    return response
+
+
+def _make_anthropic_client_mock(response_text: str) -> MagicMock:
+    """Build a mock anthropic.Anthropic client that returns the given text."""
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = _make_anthropic_response(response_text)
+    return mock_client
 
 
 # ---------------------------------------------------------------------------
@@ -93,11 +118,191 @@ def test_health_check_strips_trailing_slash_from_host() -> None:
 
 
 # ---------------------------------------------------------------------------
-# generate_card_name — success cases
+# _anthropic_generate_card_name — success cases
 # ---------------------------------------------------------------------------
 
 
-def test_generate_card_name_success_returns_name_and_source() -> None:
+def test_anthropic_generate_card_name_success_returns_name_and_source() -> None:
+    with patch("src.llm_client.anthropic_sdk.Anthropic") as mock_cls:
+        mock_cls.return_value = _make_anthropic_client_mock("Review quarterly board deck")
+        result = _anthropic_generate_card_name(
+            subject="Q3 Board Deck",
+            body_excerpt="Please review before Friday.",
+            prompt_template=CARD_NAME_TEMPLATE,
+            api_key=FAKE_ANTHROPIC_KEY,
+        )
+    assert result is not None
+    name, source = result
+    assert name == "Review quarterly board deck"
+    assert source == "anthropic"
+
+
+def test_anthropic_generate_card_name_truncates_to_100_chars() -> None:
+    long_text = "A" * 200
+    with patch("src.llm_client.anthropic_sdk.Anthropic") as mock_cls:
+        mock_cls.return_value = _make_anthropic_client_mock(long_text)
+        result = _anthropic_generate_card_name(
+            subject="Long",
+            body_excerpt="body",
+            prompt_template=CARD_NAME_TEMPLATE,
+            api_key=FAKE_ANTHROPIC_KEY,
+        )
+    assert result is not None
+    name, _ = result
+    assert len(name) <= 100
+
+
+def test_anthropic_generate_card_name_uses_correct_model() -> None:
+    with patch("src.llm_client.anthropic_sdk.Anthropic") as mock_cls:
+        mock_client = _make_anthropic_client_mock("Task name")
+        mock_cls.return_value = mock_client
+        _anthropic_generate_card_name(
+            subject="Test",
+            body_excerpt="body",
+            prompt_template=CARD_NAME_TEMPLATE,
+            api_key=FAKE_ANTHROPIC_KEY,
+        )
+    call_kwargs = mock_client.messages.create.call_args[1]
+    assert call_kwargs["model"] == "claude-haiku-4-5-20251001"
+
+
+def test_anthropic_generate_card_name_uses_api_key() -> None:
+    with patch("src.llm_client.anthropic_sdk.Anthropic") as mock_cls:
+        mock_cls.return_value = _make_anthropic_client_mock("Task name")
+        _anthropic_generate_card_name(
+            subject="Test",
+            body_excerpt="body",
+            prompt_template=CARD_NAME_TEMPLATE,
+            api_key="sk-ant-specific-key",
+        )
+    mock_cls.assert_called_once_with(api_key="sk-ant-specific-key")
+
+
+def test_anthropic_generate_card_name_substitutes_template_placeholders() -> None:
+    with patch("src.llm_client.anthropic_sdk.Anthropic") as mock_cls:
+        mock_client = _make_anthropic_client_mock("Review document")
+        mock_cls.return_value = mock_client
+        _anthropic_generate_card_name(
+            subject="My Subject",
+            body_excerpt="My body excerpt",
+            prompt_template="Subject: {{subject}}\nBody: {{body_preview}}",
+            api_key=FAKE_ANTHROPIC_KEY,
+        )
+    call_kwargs = mock_client.messages.create.call_args[1]
+    prompt_sent = call_kwargs["messages"][0]["content"]
+    assert "My Subject" in prompt_sent
+    assert "My body excerpt" in prompt_sent
+    assert "{{subject}}" not in prompt_sent
+    assert "{{body_preview}}" not in prompt_sent
+
+
+def test_anthropic_generate_card_name_strips_think_tags() -> None:
+    raw = "<think>reasoning</think>\nReview the document"
+    with patch("src.llm_client.anthropic_sdk.Anthropic") as mock_cls:
+        mock_cls.return_value = _make_anthropic_client_mock(raw)
+        result = _anthropic_generate_card_name(
+            subject="Test",
+            body_excerpt="body",
+            prompt_template=CARD_NAME_TEMPLATE,
+            api_key=FAKE_ANTHROPIC_KEY,
+        )
+    assert result is not None
+    name, _ = result
+    assert "<think>" not in name
+    assert "Review the document" in name
+
+
+# ---------------------------------------------------------------------------
+# _anthropic_generate_card_name — failure cases
+# ---------------------------------------------------------------------------
+
+
+def test_anthropic_generate_card_name_auth_error_returns_none() -> None:
+    with patch("src.llm_client.anthropic_sdk.Anthropic") as mock_cls:
+        mock_cls.return_value.messages.create.side_effect = (
+            anthropic_sdk.AuthenticationError(
+                message="bad key",
+                response=MagicMock(status_code=401),
+                body={},
+            )
+        )
+        result = _anthropic_generate_card_name(
+            subject="Test",
+            body_excerpt="body",
+            prompt_template=CARD_NAME_TEMPLATE,
+            api_key="bad-key",
+        )
+    assert result is None
+
+
+def test_anthropic_generate_card_name_rate_limit_returns_none() -> None:
+    with patch("src.llm_client.anthropic_sdk.Anthropic") as mock_cls:
+        mock_cls.return_value.messages.create.side_effect = (
+            anthropic_sdk.RateLimitError(
+                message="rate limited",
+                response=MagicMock(status_code=429),
+                body={},
+            )
+        )
+        result = _anthropic_generate_card_name(
+            subject="Test",
+            body_excerpt="body",
+            prompt_template=CARD_NAME_TEMPLATE,
+            api_key=FAKE_ANTHROPIC_KEY,
+        )
+    assert result is None
+
+
+def test_anthropic_generate_card_name_server_error_returns_none() -> None:
+    with patch("src.llm_client.anthropic_sdk.Anthropic") as mock_cls:
+        mock_cls.return_value.messages.create.side_effect = (
+            anthropic_sdk.InternalServerError(
+                message="server error",
+                response=MagicMock(status_code=500),
+                body={},
+            )
+        )
+        result = _anthropic_generate_card_name(
+            subject="Test",
+            body_excerpt="body",
+            prompt_template=CARD_NAME_TEMPLATE,
+            api_key=FAKE_ANTHROPIC_KEY,
+        )
+    assert result is None
+
+
+def test_anthropic_generate_card_name_connection_error_returns_none() -> None:
+    with patch("src.llm_client.anthropic_sdk.Anthropic") as mock_cls:
+        mock_cls.return_value.messages.create.side_effect = (
+            anthropic_sdk.APIConnectionError(request=MagicMock())
+        )
+        result = _anthropic_generate_card_name(
+            subject="Test",
+            body_excerpt="body",
+            prompt_template=CARD_NAME_TEMPLATE,
+            api_key=FAKE_ANTHROPIC_KEY,
+        )
+    assert result is None
+
+
+def test_anthropic_generate_card_name_empty_response_returns_none() -> None:
+    with patch("src.llm_client.anthropic_sdk.Anthropic") as mock_cls:
+        mock_cls.return_value = _make_anthropic_client_mock("   ")
+        result = _anthropic_generate_card_name(
+            subject="Test",
+            body_excerpt="body",
+            prompt_template=CARD_NAME_TEMPLATE,
+            api_key=FAKE_ANTHROPIC_KEY,
+        )
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# generate_card_name — Ollama path (no Anthropic key)
+# ---------------------------------------------------------------------------
+
+
+def test_generate_card_name_ollama_success_returns_ollama_source() -> None:
     mock_resp = _make_urlopen_mock(
         {"model": "qwen3:8b", "response": "Review quarterly board deck"}
     )
@@ -111,7 +316,7 @@ def test_generate_card_name_success_returns_name_and_source() -> None:
     assert result is not None
     name, source = result
     assert name == "Review quarterly board deck"
-    assert source == "llm"
+    assert source == "ollama"
 
 
 def test_generate_card_name_strips_think_tags() -> None:
@@ -197,7 +402,7 @@ def test_generate_card_name_substitutes_template_placeholders() -> None:
 
 
 # ---------------------------------------------------------------------------
-# generate_card_name — failure cases
+# generate_card_name — Ollama failure cases
 # ---------------------------------------------------------------------------
 
 
@@ -275,6 +480,117 @@ def test_generate_card_name_think_tags_only_response_returns_none() -> None:
 
 
 # ---------------------------------------------------------------------------
+# generate_card_name — three-tier fallback chain
+# ---------------------------------------------------------------------------
+
+
+def test_generate_card_name_anthropic_key_uses_anthropic_first() -> None:
+    """With an API key configured, Anthropic should be tried first."""
+    with patch("src.llm_client._anthropic_generate_card_name") as mock_anthropic:
+        mock_anthropic.return_value = ("Anthropic name", "anthropic")
+        result = generate_card_name(
+            subject="Test",
+            body_excerpt="body",
+            prompt_template=CARD_NAME_TEMPLATE,
+            config=SAMPLE_CONFIG,
+            anthropic_api_key=FAKE_ANTHROPIC_KEY,
+        )
+    mock_anthropic.assert_called_once()
+    assert result == ("Anthropic name", "anthropic")
+
+
+def test_generate_card_name_no_anthropic_key_skips_anthropic() -> None:
+    """Without an API key, Anthropic should not be called."""
+    with patch("src.llm_client._anthropic_generate_card_name") as mock_anthropic:
+        mock_resp = _make_urlopen_mock({"response": "Ollama name"})
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            generate_card_name(
+                subject="Test",
+                body_excerpt="body",
+                prompt_template=CARD_NAME_TEMPLATE,
+                config=SAMPLE_CONFIG,
+                anthropic_api_key="",
+            )
+    mock_anthropic.assert_not_called()
+
+
+def test_generate_card_name_anthropic_fails_falls_back_to_ollama() -> None:
+    """If Anthropic returns None, Ollama is tried next."""
+    mock_resp = _make_urlopen_mock({"response": "Ollama name"})
+    with patch("src.llm_client._anthropic_generate_card_name", return_value=None):
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            result = generate_card_name(
+                subject="Test",
+                body_excerpt="body",
+                prompt_template=CARD_NAME_TEMPLATE,
+                config=SAMPLE_CONFIG,
+                anthropic_api_key=FAKE_ANTHROPIC_KEY,
+            )
+    assert result is not None
+    name, source = result
+    assert name == "Ollama name"
+    assert source == "ollama"
+
+
+def test_generate_card_name_anthropic_rate_limited_falls_back_to_ollama() -> None:
+    """A 429 from Anthropic should fall through to Ollama."""
+    with patch("src.llm_client.anthropic_sdk.Anthropic") as mock_cls:
+        mock_cls.return_value.messages.create.side_effect = (
+            anthropic_sdk.RateLimitError(
+                message="rate limited",
+                response=MagicMock(status_code=429),
+                body={},
+            )
+        )
+        mock_resp = _make_urlopen_mock({"response": "Ollama fallback"})
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            result = generate_card_name(
+                subject="Test",
+                body_excerpt="body",
+                prompt_template=CARD_NAME_TEMPLATE,
+                config=SAMPLE_CONFIG,
+                anthropic_api_key=FAKE_ANTHROPIC_KEY,
+            )
+    assert result is not None
+    name, source = result
+    assert name == "Ollama fallback"
+    assert source == "ollama"
+
+
+def test_generate_card_name_both_fail_returns_none() -> None:
+    """If Anthropic and Ollama both fail, return None."""
+    with patch("src.llm_client._anthropic_generate_card_name", return_value=None):
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=urllib.error.URLError("connection refused"),
+        ):
+            result = generate_card_name(
+                subject="Test",
+                body_excerpt="body",
+                prompt_template=CARD_NAME_TEMPLATE,
+                config=SAMPLE_CONFIG,
+                anthropic_api_key=FAKE_ANTHROPIC_KEY,
+            )
+    assert result is None
+
+
+def test_generate_card_name_no_key_ollama_fails_returns_none() -> None:
+    """Without a key and Ollama down, return None."""
+    with patch(
+        "urllib.request.urlopen",
+        side_effect=urllib.error.URLError("connection refused"),
+    ):
+        result = generate_card_name(
+            subject="Test",
+            body_excerpt="body",
+            prompt_template=CARD_NAME_TEMPLATE,
+            config=SAMPLE_CONFIG,
+            anthropic_api_key="",
+        )
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
 # _clean_llm_response unit tests
 # ---------------------------------------------------------------------------
 
@@ -316,53 +632,3 @@ def test_clean_llm_response_empty_string() -> None:
 def test_clean_llm_response_think_tags_only_becomes_empty() -> None:
     raw = "<think>just thinking</think>"
     assert _clean_llm_response(raw) == ""
-
-
-# ---------------------------------------------------------------------------
-# warmup
-# ---------------------------------------------------------------------------
-
-
-def test_warmup_success_does_not_raise() -> None:
-    mock_resp = _make_urlopen_mock({"response": "OK", "done": True})
-    with patch("urllib.request.urlopen", return_value=mock_resp):
-        warmup(SAMPLE_CONFIG, timeout=10)  # should complete without raising
-
-
-def test_warmup_sends_to_generate_endpoint() -> None:
-    mock_resp = _make_urlopen_mock({"response": "OK"})
-    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
-        warmup(SAMPLE_CONFIG, timeout=10)
-    req = mock_urlopen.call_args[0][0]
-    assert req.full_url.endswith("/api/generate")
-
-
-def test_warmup_uses_configured_model() -> None:
-    mock_resp = _make_urlopen_mock({"response": "OK"})
-    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
-        warmup(SAMPLE_CONFIG, timeout=10)
-    req = mock_urlopen.call_args[0][0]
-    payload = json.loads(req.data)
-    assert payload["model"] == "qwen3:8b"
-
-
-def test_warmup_uses_provided_timeout() -> None:
-    mock_resp = _make_urlopen_mock({"response": "OK"})
-    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
-        warmup(SAMPLE_CONFIG, timeout=99)
-    _, kwargs = mock_urlopen.call_args
-    assert kwargs.get("timeout") == 99
-
-
-def test_warmup_timeout_error_does_not_raise() -> None:
-    import socket
-    with patch("urllib.request.urlopen", side_effect=socket.timeout("timed out")):
-        warmup(SAMPLE_CONFIG, timeout=1)  # should log warning, not raise
-
-
-def test_warmup_url_error_does_not_raise() -> None:
-    with patch(
-        "urllib.request.urlopen",
-        side_effect=urllib.error.URLError("connection refused"),
-    ):
-        warmup(SAMPLE_CONFIG, timeout=1)  # should log warning, not raise

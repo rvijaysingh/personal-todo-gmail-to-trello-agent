@@ -103,7 +103,6 @@ Two config sources plus LLM prompts:
    - trello_api_key
    - trello_api_token
    - trello_board_id (the Todo board: oNIV6Mcq)
-   - anthropic_api_key (optional — if missing, falls back to Ollama)
    - ollama_host (default: http://localhost:11434)
    - ollama_model (default: qwen3:8b)
    - gmail_oauth_credentials_path (path to credentials.json)
@@ -113,6 +112,8 @@ Two config sources plus LLM prompts:
    settings. config/agent_config.json.example is committed as a
    template showing the required schema with placeholder values.
    Fields:
+   - anthropic_api_key: API key for Anthropic (optional — if missing,
+     falls back to Ollama; this key is specific to this Gmail-to-Trello Agent)
    - trello_list_id: ID of the "Backlog to Triage (incl. Gmail)" list
    - first_run_lookback_days: default 7
    - gmail_processed_label: default "Agent/Added-To-Trello"

@@ -42,6 +42,7 @@ VALID_AGENT_CONFIG: dict = {
     "db_path": "data/emails_processed.db",
     "llm_timeout_seconds": 120,
     "max_emails_per_run": 50,
+    "anthropic_api_key": "test-anthropic-key",
 }
 
 
@@ -101,6 +102,7 @@ def test_load_config_valid_agent_fields(tmp_path: Path) -> None:
     assert ac.db_path == "data/emails_processed.db"
     assert ac.llm_timeout_seconds == 120
     assert ac.max_emails_per_run == 50
+    assert ac.anthropic_api_key == "test-anthropic-key"
 
 
 # ---------------------------------------------------------------------------

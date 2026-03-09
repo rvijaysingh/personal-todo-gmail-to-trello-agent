@@ -40,6 +40,7 @@ class AgentConfig:
     db_path: str
     llm_timeout_seconds: int
     max_emails_per_run: int
+    anthropic_api_key: str
 
 
 def _repo_root() -> Path:
@@ -166,6 +167,7 @@ def _parse_agent_config(data: dict, source: str) -> AgentConfig:
         db_path=str(data["db_path"]),
         llm_timeout_seconds=int(data.get("llm_timeout_seconds", 120)),
         max_emails_per_run=int(data.get("max_emails_per_run", 50)),
+        anthropic_api_key=str(data.get("anthropic_api_key", "")),
     )
 
 

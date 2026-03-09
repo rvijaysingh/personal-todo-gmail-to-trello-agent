@@ -229,14 +229,25 @@ def run(
     # Step 3 — Initialise database
     db.init_db(ac.db_path)
 
-    # Step 4 — Ollama health check (non-fatal); warm up model if reachable
-    if not llm_client.health_check(gc):
-        logger.warning(
-            "Ollama unavailable at %s — card names will use fallback subject line",
-            gc.ollama_host,
-        )
+    # Step 4 — Log LLM provider availability
+    ollama_ok = llm_client.health_check(gc)
+    if ac.anthropic_api_key:
+        if ollama_ok:
+            logger.info(
+                "LLM: Anthropic API (Haiku 4.5) configured as primary, Ollama as fallback"
+            )
+        else:
+            logger.info(
+                "LLM: Anthropic API (Haiku 4.5) configured as primary, "
+                "Ollama unreachable — no local fallback"
+            )
+    elif ollama_ok:
+        logger.info("LLM: No Anthropic API key — using Ollama as primary")
     else:
-        llm_client.warmup(gc, timeout=ac.llm_timeout_seconds)
+        logger.warning(
+            "LLM: No Anthropic API key and Ollama unreachable — "
+            "using subject line fallback only"
+        )
 
     # Step 5 — Validate Trello list
     try:
@@ -283,10 +294,14 @@ def run(
             max_age_days,
         )
 
-    # Bind GlobalConfig and timeout into the LLM callable so card_builder
-    # receives only (subject, body_excerpt, template) as required by LlmClientFn.
+    # Bind GlobalConfig, timeout, and anthropic_api_key into the LLM callable so
+    # card_builder receives only (subject, body_excerpt, template) as required
+    # by LlmClientFn.
     llm_fn: LlmClientFn = functools.partial(
-        llm_client.generate_card_name, config=gc, timeout=ac.llm_timeout_seconds
+        llm_client.generate_card_name,
+        config=gc,
+        timeout=ac.llm_timeout_seconds,
+        anthropic_api_key=ac.anthropic_api_key,
     )
 
     # Step 9 — Fetch starred emails (oldest first), excluding already-processed ones

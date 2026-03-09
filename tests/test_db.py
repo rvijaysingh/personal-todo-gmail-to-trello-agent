@@ -29,7 +29,7 @@ def make_card() -> CardPayload:
     return CardPayload(
         name="Follow up on test email",
         description="See test email from Alice on 2026-03-08",
-        card_name_source="llm",
+        card_name_source="anthropic",
     )
 
 
@@ -165,7 +165,7 @@ def test_insert_record_with_full_card_payload(tmp_path: Path) -> None:
 
     assert row is not None
     assert row[0] == "Follow up on test email"
-    assert row[1] == "llm"
+    assert row[1] == "anthropic"
     assert row[2] == "card_abc"
     assert row[3] == "success"
 

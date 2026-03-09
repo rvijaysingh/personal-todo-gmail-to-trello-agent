@@ -46,6 +46,7 @@ def make_ac(**overrides) -> AgentConfig:
         db_path="/tmp/test_emails.db",
         llm_timeout_seconds=120,
         max_emails_per_run=50,
+        anthropic_api_key="test-key",
     )
     defaults.update(overrides)
     return AgentConfig(**defaults)
@@ -83,7 +84,7 @@ _CREATE_CARD = "src.trello_client.create_card"
 _APPLY_LABEL = "src.gmail_client.apply_label"
 _INSERT = "src.db.insert_record"
 
-_DEFAULT_CARD_NAME = ("Review the document", "llm")
+_DEFAULT_CARD_NAME = ("Review the document", "anthropic")
 _DEFAULT_CARD_URL = ("card_abc", "https://trello.com/c/abc")
 
 
@@ -316,10 +317,16 @@ def test_process_email_apply_label_failure_preserves_card_url() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_process_email_records_llm_card_name_source() -> None:
-    _, mocks = _run_process_email(gen_name_rv=("Task name", "llm"))
+def test_process_email_records_anthropic_card_name_source() -> None:
+    _, mocks = _run_process_email(gen_name_rv=("Task name", "anthropic"))
     _db_path, _email, card_arg, _result = mocks["insert"].call_args[0]
-    assert card_arg.card_name_source == "llm"
+    assert card_arg.card_name_source == "anthropic"
+
+
+def test_process_email_records_ollama_card_name_source() -> None:
+    _, mocks = _run_process_email(gen_name_rv=("Task name", "ollama"))
+    _db_path, _email, card_arg, _result = mocks["insert"].call_args[0]
+    assert card_arg.card_name_source == "ollama"
 
 
 def test_process_email_records_fallback_card_name_source() -> None:
@@ -348,7 +355,6 @@ def run_env():
         "health_check": patch(
             "src.llm_client.health_check", return_value=True
         ),
-        "warmup": patch("src.llm_client.warmup"),
         "validate_list": patch(
             "src.trello_client.validate_list", return_value=True
         ),
@@ -434,23 +440,21 @@ def test_run_ollama_unavailable_does_not_exit(run_env) -> None:
     run()
 
 
-def test_run_warmup_called_when_ollama_healthy(run_env) -> None:
+def test_run_ollama_health_check_called(run_env) -> None:
+    run()
+    run_env["health_check"].assert_called_once()
+
+
+def test_run_anthropic_configured_ollama_healthy_does_not_exit(run_env) -> None:
+    run_env["load_config"].return_value = (make_gc(), make_ac(anthropic_api_key="sk-ant-key"))
     run_env["health_check"].return_value = True
-    run()
-    run_env["warmup"].assert_called_once()
+    run()  # should not raise
 
 
-def test_run_warmup_not_called_when_ollama_unavailable(run_env) -> None:
+def test_run_no_anthropic_key_ollama_unavailable_does_not_exit(run_env) -> None:
+    run_env["load_config"].return_value = (make_gc(), make_ac(anthropic_api_key=""))
     run_env["health_check"].return_value = False
-    run()
-    run_env["warmup"].assert_not_called()
-
-
-def test_run_warmup_receives_llm_timeout_seconds(run_env) -> None:
-    run_env["load_config"].return_value = (make_gc(), make_ac(llm_timeout_seconds=90))
-    run()
-    _, kwargs = run_env["warmup"].call_args
-    assert kwargs.get("timeout") == 90
+    run()  # warning logged but should not raise or exit
 
 
 # ---------------------------------------------------------------------------

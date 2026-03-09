@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(python:*)",
-      "Bash(pytest:*)"
+      "Bash(pytest:*)",
+      "Skill(claude-api)",
+      "Bash(pip install:*)"
     ]
   }
 }

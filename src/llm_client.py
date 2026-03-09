@@ -1,12 +1,13 @@
-"""Ollama API wrapper with health check and card name generation."""
+"""LLM client: Anthropic API (primary) and Ollama (fallback) for card name generation."""
 
 import json
 import logging
 import re
-import time
 import urllib.error
 import urllib.request
 from typing import Optional
+
+import anthropic as anthropic_sdk
 
 from src.config_loader import GlobalConfig
 
@@ -15,6 +16,7 @@ logger = logging.getLogger(__name__)
 _HEALTH_TIMEOUT_SEC = 5
 _DEFAULT_GENERATE_TIMEOUT_SEC = 120
 _MAX_NAME_LENGTH = 100
+_ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
 
 # qwen3 reasoning mode wraps its internal monologue in <think> tags
 _THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
@@ -56,41 +58,70 @@ def _clean_llm_response(raw: str) -> str:
     return text.strip()
 
 
-def warmup(config: GlobalConfig, timeout: int = _DEFAULT_GENERATE_TIMEOUT_SEC) -> None:
-    """Send a trivial generation request to force the model to load into memory.
-
-    Call this once after a successful health_check, before the processing loop,
-    so the first real email does not pay the model-load latency cost.
-    Logs the elapsed time. Never raises — a failed warmup is logged as a warning
-    and processing continues (generation calls will use the fallback on timeout).
+def _anthropic_generate_card_name(
+    subject: str,
+    body_excerpt: str,
+    prompt_template: str,
+    api_key: str,
+) -> Optional[tuple[str, str]]:
+    """Generate a card name using the Anthropic API (Claude Haiku 4.5).
 
     Args:
-        config: Global config with ollama_host and ollama_model.
-        timeout: Request timeout in seconds (should match llm_timeout_seconds).
-    """
-    logger.info("Warming up Ollama model %s ...", config.ollama_model)
-    start = time.monotonic()
+        subject: Email subject line.
+        body_excerpt: First ~500 characters of the email body.
+        prompt_template: The card_name.md template with {{subject}} and
+            {{body_preview}} placeholders.
+        api_key: Anthropic API key.
 
-    url = f"{config.ollama_host.rstrip('/')}/api/generate"
-    payload = {"model": config.ollama_model, "prompt": "respond with OK", "stream": False}
-    encoded = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url, data=encoded, headers={"Content-Type": "application/json"}
+    Returns:
+        Tuple of (card_name, "anthropic") on success, None on any failure.
+    """
+    prompt = prompt_template.replace("{{subject}}", subject).replace(
+        "{{body_preview}}", body_excerpt
+    )
+    logger.debug(
+        "Sending Anthropic request: model=%s subject=%r", _ANTHROPIC_MODEL, subject
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            resp.read()
-        elapsed = time.monotonic() - start
-        logger.info("Ollama warmup complete in %.1f seconds", elapsed)
-    except Exception as exc:
-        elapsed = time.monotonic() - start
-        logger.warning(
-            "Ollama warmup failed after %.1f seconds (%s): %s",
-            elapsed,
-            type(exc).__name__,
-            exc,
+        client = anthropic_sdk.Anthropic(api_key=api_key)
+        response = client.messages.create(
+            model=_ANTHROPIC_MODEL,
+            max_tokens=150,
+            messages=[{"role": "user", "content": prompt}],
         )
+        raw = next(
+            (block.text for block in response.content if block.type == "text"), ""
+        )
+    except anthropic_sdk.AuthenticationError as exc:
+        logger.warning("Anthropic authentication failed (bad API key): %s", exc)
+        return None
+    except anthropic_sdk.RateLimitError as exc:
+        logger.warning("Anthropic rate limit hit: %s", exc)
+        return None
+    except anthropic_sdk.APIStatusError as exc:
+        logger.warning("Anthropic API error (%d): %s", exc.status_code, exc)
+        return None
+    except anthropic_sdk.APIConnectionError as exc:
+        logger.warning("Anthropic connection error: %s", exc)
+        return None
+    except Exception as exc:
+        logger.warning("Anthropic request failed (%s): %s", type(exc).__name__, exc)
+        return None
+
+    logger.debug("Anthropic raw response: %s", raw)
+
+    name = _clean_llm_response(raw)
+    if not name:
+        logger.warning("Anthropic returned an empty response after cleaning")
+        return None
+
+    if len(name) > _MAX_NAME_LENGTH:
+        name = name[:_MAX_NAME_LENGTH].rstrip()
+        logger.debug("Card name truncated to %d chars", _MAX_NAME_LENGTH)
+
+    logger.info("Anthropic generated card name: %r", name)
+    return (name, "anthropic")
 
 
 def generate_card_name(
@@ -99,12 +130,14 @@ def generate_card_name(
     prompt_template: str,
     config: GlobalConfig,
     timeout: int = _DEFAULT_GENERATE_TIMEOUT_SEC,
+    anthropic_api_key: str = "",
 ) -> Optional[tuple[str, str]]:
-    """Generate an actionable Trello card name from email content via Ollama.
+    """Generate an actionable Trello card name from email content.
 
-    Substitutes {{subject}} and {{body_preview}} in the prompt template, sends
-    the request to Ollama's /api/generate endpoint, and returns the cleaned
-    response. Falls back gracefully on any failure.
+    Three-tier fallback:
+    1. Anthropic API (Haiku 4.5) if anthropic_api_key is configured.
+    2. Ollama /api/generate if Anthropic is unavailable or unconfigured.
+    3. Returns None — card_builder falls back to the cleaned subject line.
 
     Args:
         subject: Email subject line.
@@ -112,18 +145,26 @@ def generate_card_name(
         prompt_template: The card_name.md template with {{subject}} and
             {{body_preview}} placeholders.
         config: Global config with ollama_host and ollama_model.
-        timeout: Request timeout in seconds. Defaults to
-            _DEFAULT_GENERATE_TIMEOUT_SEC (120s). Override via
-            AgentConfig.llm_timeout_seconds bound with functools.partial.
+        timeout: Ollama request timeout in seconds.
+        anthropic_api_key: Anthropic API key. If empty, Anthropic is skipped.
 
     Returns:
-        Tuple of (card_name, "llm") on success. None on any failure so the
-        caller can fall back to the cleaned subject line.
+        Tuple of (card_name, source) where source is "anthropic" or "ollama",
+        or None on complete failure so the caller can fall back to the subject line.
     """
+    # Tier 1: Anthropic API
+    if anthropic_api_key:
+        result = _anthropic_generate_card_name(
+            subject, body_excerpt, prompt_template, anthropic_api_key
+        )
+        if result is not None:
+            return result
+        logger.warning("Anthropic failed — falling through to Ollama")
+
+    # Tier 2: Ollama
     prompt = prompt_template.replace("{{subject}}", subject).replace(
         "{{body_preview}}", body_excerpt
     )
-
     url = f"{config.ollama_host.rstrip('/')}/api/generate"
     payload = {
         "model": config.ollama_model,
@@ -172,8 +213,8 @@ def generate_card_name(
         name = name[:_MAX_NAME_LENGTH].rstrip()
         logger.debug("Card name truncated to %d chars", _MAX_NAME_LENGTH)
 
-    logger.info("LLM generated card name: %r", name)
-    return (name, "llm")
+    logger.info("Ollama generated card name: %r", name)
+    return (name, "ollama")
 
 
 if __name__ == "__main__":
@@ -185,28 +226,29 @@ if __name__ == "__main__":
     try:
         from src.config_loader import load_config
 
-        gc, _ = load_config()
+        gc, ac = load_config()
     except Exception as exc:
         logger.error("Could not load config: %s", exc)
         sys.exit(1)
 
-    print(f"Ollama host : {gc.ollama_host}")
-    print(f"Ollama model: {gc.ollama_model}")
+    print(f"Anthropic key : {'configured' if ac.anthropic_api_key else 'not configured'}")
+    print(f"Ollama host   : {gc.ollama_host}")
+    print(f"Ollama model  : {gc.ollama_model}")
 
     ok = health_check(gc)
-    print(f"Health check: {'OK' if ok else 'FAILED'}")
+    print(f"Ollama health : {'OK' if ok else 'FAILED'}")
 
-    if ok:
-        template_path = Path(__file__).parent.parent / "prompts" / "card_name.md"
-        template = template_path.read_text(encoding="utf-8")
-        result = generate_card_name(
-            subject="Re: Q3 Board Deck - Final Review",
-            body_excerpt="Please review the attached deck before Friday's board meeting.",
-            prompt_template=template,
-            config=gc,
-        )
-        if result:
-            name, source = result
-            print(f"Generated ({source}): {name}")
-        else:
-            print("Card name generation failed (LLM unavailable or errored)")
+    template_path = Path(__file__).parent.parent / "prompts" / "card_name.md"
+    template = template_path.read_text(encoding="utf-8")
+    result = generate_card_name(
+        subject="Re: Q3 Board Deck - Final Review",
+        body_excerpt="Please review the attached deck before Friday's board meeting.",
+        prompt_template=template,
+        config=gc,
+        anthropic_api_key=ac.anthropic_api_key,
+    )
+    if result:
+        name, source = result
+        print(f"Generated ({source}): {name}")
+    else:
+        print("Card name generation failed (all LLM providers unavailable)")
