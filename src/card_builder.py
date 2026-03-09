@@ -124,9 +124,14 @@ def build_card_description(email: EmailRecord, max_chars: int = 16384) -> str:
     """Build the Trello card description from an email.
 
     Format:
-        See "<subject>" email from <sender> on <formatted date>
+        - See "<subject>" email from <sender> on <formatted date>
+        ------
         <blank line>
         <email body>
+
+    The bullet-point metadata line is designed to accommodate additional
+    bullet points in future (e.g. "- Possible duplicate of: [link]") between
+    the last bullet and the separator.
 
     If the total length exceeds max_chars, the body is truncated and a
     notice is appended.
@@ -141,9 +146,9 @@ def build_card_description(email: EmailRecord, max_chars: int = 16384) -> str:
     """
     formatted_date = _format_date(email.email_date)
     header = (
-        f'See "{email.subject}" email from {email.sender} on {formatted_date}'
+        f'- See "{email.subject}" email from {email.sender} on {formatted_date}'
     )
-    separator = "\n\n"
+    separator = "\n------\n\n"
 
     full_description = header + separator + email.body
     if len(full_description) <= max_chars:

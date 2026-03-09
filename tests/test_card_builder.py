@@ -272,7 +272,7 @@ def test_generate_card_name_fallback_when_llm_raises() -> None:
 def test_build_card_description_starts_with_see_header() -> None:
     email = make_email(subject="Invoice from supplier", sender="Bob <bob@example.com>")
     desc = build_card_description(email)
-    assert desc.startswith('See "Invoice from supplier" email from Bob <bob@example.com>')
+    assert desc.startswith('- See "Invoice from supplier" email from Bob <bob@example.com>')
 
 
 def test_build_card_description_header_format() -> None:
@@ -283,15 +283,16 @@ def test_build_card_description_header_format() -> None:
     )
     desc = build_card_description(email)
     first_line = desc.split("\n")[0]
-    assert first_line == 'See "Q3 Board Deck" email from Alice <alice@example.com> on March 8, 2026'
+    assert first_line == '- See "Q3 Board Deck" email from Alice <alice@example.com> on March 8, 2026'
 
 
-def test_build_card_description_has_blank_line_after_header() -> None:
+def test_build_card_description_has_separator_and_blank_line_after_header() -> None:
     email = make_email()
     desc = build_card_description(email)
     lines = desc.split("\n")
-    # Line 0: header, line 1: blank, line 2+: body
-    assert lines[1] == ""
+    # Line 0: "- See ..." header, line 1: "------", line 2: blank, line 3+: body
+    assert lines[1] == "------"
+    assert lines[2] == ""
 
 
 def test_build_card_description_body_appears_after_separator() -> None:
@@ -299,9 +300,10 @@ def test_build_card_description_body_appears_after_separator() -> None:
     email = make_email(body=body)
     desc = build_card_description(email)
     assert body in desc
-    # Body must come after the separator
-    header_end = desc.index("\n\n")
-    assert desc[header_end + 2:].startswith(body)
+    # Body must come after the "------\n\n" separator
+    sep = "\n------\n\n"
+    sep_pos = desc.index(sep)
+    assert desc[sep_pos + len(sep):].startswith(body)
 
 
 def test_build_card_description_formats_date_human_readable() -> None:
@@ -346,8 +348,9 @@ def test_build_card_description_total_length_within_max_chars_after_truncation()
 
 
 def test_build_card_description_truncation_with_custom_max_chars() -> None:
-    # max_chars=300 is large enough for the header (~72 chars) + separator +
-    # truncation notice (~78 chars), leaving ~148 chars of body.
+    # max_chars=300 is large enough for the header (~76 chars) + separator
+    # ("\n------\n\n" = 9 chars) + truncation notice (~75 chars) = ~160 chars,
+    # leaving ~140 chars of body.
     email = make_email(body="Y" * 500)
     desc = build_card_description(email, max_chars=300)
     assert len(desc) <= 300
