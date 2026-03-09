@@ -3,6 +3,7 @@
 import json
 import logging
 import re
+import time
 import urllib.error
 import urllib.request
 from typing import Optional
@@ -12,7 +13,7 @@ from src.config_loader import GlobalConfig
 logger = logging.getLogger(__name__)
 
 _HEALTH_TIMEOUT_SEC = 5
-_GENERATE_TIMEOUT_SEC = 30
+_DEFAULT_GENERATE_TIMEOUT_SEC = 120
 _MAX_NAME_LENGTH = 100
 
 # qwen3 reasoning mode wraps its internal monologue in <think> tags
@@ -55,11 +56,49 @@ def _clean_llm_response(raw: str) -> str:
     return text.strip()
 
 
+def warmup(config: GlobalConfig, timeout: int = _DEFAULT_GENERATE_TIMEOUT_SEC) -> None:
+    """Send a trivial generation request to force the model to load into memory.
+
+    Call this once after a successful health_check, before the processing loop,
+    so the first real email does not pay the model-load latency cost.
+    Logs the elapsed time. Never raises — a failed warmup is logged as a warning
+    and processing continues (generation calls will use the fallback on timeout).
+
+    Args:
+        config: Global config with ollama_host and ollama_model.
+        timeout: Request timeout in seconds (should match llm_timeout_seconds).
+    """
+    logger.info("Warming up Ollama model %s ...", config.ollama_model)
+    start = time.monotonic()
+
+    url = f"{config.ollama_host.rstrip('/')}/api/generate"
+    payload = {"model": config.ollama_model, "prompt": "respond with OK", "stream": False}
+    encoded = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=encoded, headers={"Content-Type": "application/json"}
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            resp.read()
+        elapsed = time.monotonic() - start
+        logger.info("Ollama warmup complete in %.1f seconds", elapsed)
+    except Exception as exc:
+        elapsed = time.monotonic() - start
+        logger.warning(
+            "Ollama warmup failed after %.1f seconds (%s): %s",
+            elapsed,
+            type(exc).__name__,
+            exc,
+        )
+
+
 def generate_card_name(
     subject: str,
     body_excerpt: str,
     prompt_template: str,
     config: GlobalConfig,
+    timeout: int = _DEFAULT_GENERATE_TIMEOUT_SEC,
 ) -> Optional[tuple[str, str]]:
     """Generate an actionable Trello card name from email content via Ollama.
 
@@ -73,6 +112,9 @@ def generate_card_name(
         prompt_template: The card_name.md template with {{subject}} and
             {{body_preview}} placeholders.
         config: Global config with ollama_host and ollama_model.
+        timeout: Request timeout in seconds. Defaults to
+            _DEFAULT_GENERATE_TIMEOUT_SEC (120s). Override via
+            AgentConfig.llm_timeout_seconds bound with functools.partial.
 
     Returns:
         Tuple of (card_name, "llm") on success. None on any failure so the
@@ -98,7 +140,7 @@ def generate_card_name(
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=_GENERATE_TIMEOUT_SEC) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw_body = resp.read().decode("utf-8")
     except urllib.error.URLError as exc:
         logger.warning("Ollama request failed (URLError): %s", exc)

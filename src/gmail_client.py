@@ -285,20 +285,28 @@ def _build_email_record(msg: dict) -> EmailRecord:
 def fetch_starred_emails(
     service,
     max_age_days: Optional[int] = None,
+    processed_label: Optional[str] = None,
 ) -> list[EmailRecord]:
-    """Fetch all currently starred emails, returning them sorted oldest first.
+    """Fetch starred emails that have not yet been processed, oldest first.
 
-    On first run, max_age_days limits the lookback window so the agent
-    doesn't process the user's entire starred history.
+    Always excludes emails carrying the processed label (primary safeguard
+    against reprocessing).  On first run, max_age_days caps the lookback
+    window.  On subsequent runs, max_age_days is calculated from the last
+    run timestamp so the full mailbox is never scanned.
 
     Args:
         service: Authenticated Gmail API service object from build_service().
         max_age_days: If provided, only fetch emails newer than this many days.
+        processed_label: Gmail label name to exclude (e.g. "Agent/Added-To-Trello").
+            When provided, appends ``-label:<name>`` to the query so emails
+            already processed are never returned.
 
     Returns:
         List of EmailRecord objects sorted oldest first by internalDate.
     """
     query = "is:starred"
+    if processed_label:
+        query += f" -label:{processed_label}"
     if max_age_days is not None:
         query += f" newer_than:{max_age_days}d"
 

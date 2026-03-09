@@ -38,6 +38,8 @@ class AgentConfig:
     dedup_enabled: bool
     log_file: str
     db_path: str
+    llm_timeout_seconds: int
+    max_emails_per_run: int
 
 
 def _repo_root() -> Path:
@@ -162,6 +164,8 @@ def _parse_agent_config(data: dict, source: str) -> AgentConfig:
         dedup_enabled=bool(data["dedup_enabled"]),
         log_file=str(data["log_file"]),
         db_path=str(data["db_path"]),
+        llm_timeout_seconds=int(data.get("llm_timeout_seconds", 120)),
+        max_emails_per_run=int(data.get("max_emails_per_run", 50)),
     )
 
 

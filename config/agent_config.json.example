@@ -6,5 +6,7 @@
   "processing_delay_seconds": 1,
   "dedup_enabled": true,
   "log_file": "logs/agent_run.log",
-  "db_path": "data/emails_processed.db"
+  "db_path": "data/emails_processed.db",
+  "llm_timeout_seconds": 120,
+  "max_emails_per_run": 50
 }

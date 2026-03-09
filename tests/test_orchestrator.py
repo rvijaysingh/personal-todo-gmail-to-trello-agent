@@ -13,7 +13,7 @@ import pytest
 
 from src.config_loader import AgentConfig, ConfigError, GlobalConfig
 from src.models import CardPayload, EmailRecord, ProcessingResult
-from src.orchestrator import _process_email, _setup_rotating_logger, run
+from src.orchestrator import _days_since_last_run, _process_email, _setup_rotating_logger, run
 from src.trello_client import TrelloError
 
 
@@ -44,6 +44,8 @@ def make_ac(**overrides) -> AgentConfig:
         dedup_enabled=True,
         log_file="/tmp/test_agent.log",
         db_path="/tmp/test_emails.db",
+        llm_timeout_seconds=120,
+        max_emails_per_run=50,
     )
     defaults.update(overrides)
     return AgentConfig(**defaults)
@@ -412,6 +414,7 @@ def run_env():
         "health_check": patch(
             "src.llm_client.health_check", return_value=True
         ),
+        "warmup": patch("src.llm_client.warmup"),
         "validate_list": patch(
             "src.trello_client.validate_list", return_value=True
         ),
@@ -497,6 +500,25 @@ def test_run_ollama_unavailable_does_not_exit(run_env) -> None:
     run()
 
 
+def test_run_warmup_called_when_ollama_healthy(run_env) -> None:
+    run_env["health_check"].return_value = True
+    run()
+    run_env["warmup"].assert_called_once()
+
+
+def test_run_warmup_not_called_when_ollama_unavailable(run_env) -> None:
+    run_env["health_check"].return_value = False
+    run()
+    run_env["warmup"].assert_not_called()
+
+
+def test_run_warmup_receives_llm_timeout_seconds(run_env) -> None:
+    run_env["load_config"].return_value = (make_gc(), make_ac(llm_timeout_seconds=90))
+    run()
+    _, kwargs = run_env["warmup"].call_args
+    assert kwargs.get("timeout") == 90
+
+
 # ---------------------------------------------------------------------------
 # run() — first-run vs subsequent-run detection
 # ---------------------------------------------------------------------------
@@ -511,12 +533,15 @@ def test_run_first_run_passes_lookback_days_to_fetch(run_env) -> None:
     assert kwargs.get("max_age_days") == 14
 
 
-def test_run_subsequent_run_passes_none_max_age_to_fetch(run_env) -> None:
+def test_run_subsequent_run_passes_date_window_to_fetch(run_env) -> None:
+    """Subsequent run should pass a positive max_age_days (days since last run + 2)."""
     run_env["get_last_run"].return_value = datetime(2026, 3, 1)  # subsequent run
     run()
     run_env["fetch_emails"].assert_called_once()
     _, kwargs = run_env["fetch_emails"].call_args
-    assert kwargs.get("max_age_days") is None
+    max_age = kwargs.get("max_age_days")
+    assert max_age is not None
+    assert max_age >= 2  # at least the buffer
 
 
 # ---------------------------------------------------------------------------
@@ -572,3 +597,66 @@ def test_run_failed_email_does_not_stop_loop(run_env) -> None:
     ]
     run()  # should not raise
     assert run_env["process_email"].call_count == 2
+
+
+def test_run_fetch_receives_processed_label(run_env) -> None:
+    """The Gmail fetch should always receive the processed label for exclusion."""
+    run()
+    _, kwargs = run_env["fetch_emails"].call_args
+    assert kwargs.get("processed_label") == "Agent/Added-To-Trello"
+
+
+def test_run_safety_cap_limits_emails_processed(run_env) -> None:
+    """If fetch returns more than max_emails_per_run, only oldest N are processed."""
+    ac = make_ac(max_emails_per_run=2)
+    run_env["load_config"].return_value = (make_gc(), ac)
+    emails = [make_email(f"msg_{i:03d}") for i in range(5)]
+    run_env["fetch_emails"].return_value = emails
+    run()
+    assert run_env["process_email"].call_count == 2
+
+
+def test_run_safety_cap_not_triggered_when_under_limit(run_env) -> None:
+    """If fetch returns fewer than max_emails_per_run, all are processed."""
+    ac = make_ac(max_emails_per_run=10)
+    run_env["load_config"].return_value = (make_gc(), ac)
+    emails = [make_email(f"msg_{i:03d}") for i in range(5)]
+    run_env["fetch_emails"].return_value = emails
+    run()
+    assert run_env["process_email"].call_count == 5
+
+
+# ---------------------------------------------------------------------------
+# _days_since_last_run
+# ---------------------------------------------------------------------------
+
+
+def test_days_since_last_run_same_day_returns_zero() -> None:
+    from datetime import timezone
+    now = datetime.now(timezone.utc)
+    result = _days_since_last_run(now)
+    assert result == 0
+
+
+def test_days_since_last_run_one_day_ago_returns_one() -> None:
+    from datetime import timedelta, timezone
+    yesterday = datetime.now(timezone.utc) - timedelta(days=1)
+    result = _days_since_last_run(yesterday)
+    assert result == 1
+
+
+def test_days_since_last_run_seven_days_returns_seven() -> None:
+    from datetime import timedelta, timezone
+    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    result = _days_since_last_run(week_ago)
+    assert result == 7
+
+
+def test_days_since_last_run_naive_datetime_treated_as_utc() -> None:
+    """Naive datetimes (SQLite output) should be treated as UTC without raising."""
+    from datetime import timedelta
+    # naive datetime (no tzinfo) — SQLite datetime('now') produces this
+    naive_yesterday = datetime.utcnow() - timedelta(days=1)
+    assert naive_yesterday.tzinfo is None
+    result = _days_since_last_run(naive_yesterday)
+    assert result == 1

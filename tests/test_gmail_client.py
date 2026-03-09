@@ -390,6 +390,35 @@ def test_fetch_starred_emails_without_max_age_no_newer_than() -> None:
     assert "newer_than" not in call_kwargs[1]["q"]
 
 
+def test_fetch_starred_emails_with_processed_label_excludes_it() -> None:
+    """processed_label should add '-label:X' to the Gmail query."""
+    svc = make_service(list_response={})
+
+    fetch_starred_emails(svc, processed_label="Agent/Added-To-Trello")
+
+    call_kwargs = svc.users.return_value.messages.return_value.list.call_args
+    assert "-label:Agent/Added-To-Trello" in call_kwargs[1]["q"]
+
+
+def test_fetch_starred_emails_without_processed_label_no_exclusion() -> None:
+    """Without processed_label, query should not contain '-label:'."""
+    svc = make_service(list_response={})
+
+    fetch_starred_emails(svc, processed_label=None)
+
+    call_kwargs = svc.users.return_value.messages.return_value.list.call_args
+    assert "-label:" not in call_kwargs[1]["q"]
+
+
+def test_fetch_starred_emails_query_always_starts_with_is_starred() -> None:
+    svc = make_service(list_response={})
+
+    fetch_starred_emails(svc, max_age_days=7, processed_label="Agent/Added-To-Trello")
+
+    call_kwargs = svc.users.return_value.messages.return_value.list.call_args
+    assert call_kwargs[1]["q"].startswith("is:starred")
+
+
 def test_fetch_starred_emails_missing_body_uses_placeholder() -> None:
     """A message with no extractable body should use the placeholder text."""
     payload = {

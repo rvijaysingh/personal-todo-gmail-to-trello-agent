@@ -4,6 +4,7 @@ import functools
 import logging
 import sys
 import time
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
@@ -53,6 +54,24 @@ def _setup_rotating_logger(log_file: str) -> None:
     root.setLevel(logging.INFO)
     root.addHandler(handler)
     logger.info("Logging initialised to %s", log_file)
+
+
+def _days_since_last_run(last_run: datetime) -> int:
+    """Return the number of complete days between last_run and now (UTC).
+
+    Treats naive datetimes as UTC (SQLite's datetime('now') returns UTC without
+    timezone info).
+
+    Args:
+        last_run: Timestamp returned by db.get_last_run_time().
+
+    Returns:
+        Number of complete days since last_run (0 if run earlier today).
+    """
+    now = datetime.now(timezone.utc)
+    if last_run.tzinfo is None:
+        last_run = last_run.replace(tzinfo=timezone.utc)
+    return (now - last_run).days
 
 
 def _load_prompt_template() -> str:
@@ -227,12 +246,14 @@ def run(
     # Step 3 — Initialise database
     db.init_db(ac.db_path)
 
-    # Step 4 — Ollama health check (non-fatal)
+    # Step 4 — Ollama health check (non-fatal); warm up model if reachable
     if not llm_client.health_check(gc):
         logger.warning(
             "Ollama unavailable at %s — card names will use fallback subject line",
             gc.ollama_host,
         )
+    else:
+        llm_client.warmup(gc, timeout=ac.llm_timeout_seconds)
 
     # Step 5 — Validate Trello list
     try:
@@ -271,18 +292,37 @@ def run(
         )
         max_age_days: Optional[int] = ac.first_run_lookback_days
     else:
-        logger.info("Subsequent run — processing all currently starred emails")
-        max_age_days = None
+        days_since = _days_since_last_run(last_run)
+        max_age_days = days_since + 2  # +2 day buffer
+        logger.info(
+            "Subsequent run — last run %d day(s) ago, querying newer_than:%dd",
+            days_since,
+            max_age_days,
+        )
 
-    # Bind GlobalConfig into the LLM callable so card_builder receives only
-    # (subject, body_excerpt, template) as required by LlmClientFn.
+    # Bind GlobalConfig and timeout into the LLM callable so card_builder
+    # receives only (subject, body_excerpt, template) as required by LlmClientFn.
     llm_fn: LlmClientFn = functools.partial(
-        llm_client.generate_card_name, config=gc
+        llm_client.generate_card_name, config=gc, timeout=ac.llm_timeout_seconds
     )
 
-    # Step 9 — Fetch starred emails (oldest first)
-    emails = gmail_client.fetch_starred_emails(gmail_svc, max_age_days=max_age_days)
+    # Step 9 — Fetch starred emails (oldest first), excluding already-processed ones
+    emails = gmail_client.fetch_starred_emails(
+        gmail_svc,
+        max_age_days=max_age_days,
+        processed_label=ac.gmail_processed_label,
+    )
     total = len(emails)
+
+    if total > ac.max_emails_per_run:
+        logger.warning(
+            "Gmail returned %d emails — capping at max_emails_per_run=%d (oldest first)",
+            total,
+            ac.max_emails_per_run,
+        )
+        emails = emails[: ac.max_emails_per_run]
+        total = ac.max_emails_per_run
+
     logger.info("Found %d starred email(s) to process", total)
 
     # Step 10 — Processing loop

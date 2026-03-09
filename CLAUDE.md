@@ -127,13 +127,21 @@ Two config sources plus LLM prompts:
 ## Business Rules
 
 ### Run Logic
-1. On each run, query Gmail for all currently starred emails.
+1. On each run, query Gmail for starred emails that do NOT carry the
+   processed label ("is:starred -label:Agent/Added-To-Trello"). The
+   label exclusion is always applied to prevent reprocessing.
 2. If this is the first run (no records in emails_processed.db),
    limit to starred emails received within the last
    first_run_lookback_days (default 7). This avoids processing
    the user's entire starred email history.
-3. On subsequent runs, process all starred emails found. The star
-   is the work queue -- if it is starred, it needs processing.
+3. On subsequent runs, calculate a date window: days since the last
+   run + 2-day buffer. Pass this as the newer_than filter. This
+   prevents unbounded mailbox scans while the +2 buffer ensures
+   emails near the boundary are never missed.
+4. A safety cap max_emails_per_run (default 50) limits the batch
+   size. If the query returns more emails, log a warning and
+   process only the oldest N. This prevents runaway first-run or
+   config-error scenarios from consuming API quota.
 
 ### Per-Email Processing Pipeline
 For each starred email, in sequence (one at a time for crash safety):

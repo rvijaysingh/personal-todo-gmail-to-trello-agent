@@ -40,6 +40,8 @@ VALID_AGENT_CONFIG: dict = {
     "dedup_enabled": True,
     "log_file": "logs/agent_run.log",
     "db_path": "data/emails_processed.db",
+    "llm_timeout_seconds": 120,
+    "max_emails_per_run": 50,
 }
 
 
@@ -97,6 +99,8 @@ def test_load_config_valid_agent_fields(tmp_path: Path) -> None:
     assert ac.dedup_enabled is True
     assert ac.log_file == "logs/agent_run.log"
     assert ac.db_path == "data/emails_processed.db"
+    assert ac.llm_timeout_seconds == 120
+    assert ac.max_emails_per_run == 50
 
 
 # ---------------------------------------------------------------------------

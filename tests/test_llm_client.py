@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.config_loader import GlobalConfig
-from src.llm_client import _clean_llm_response, generate_card_name, health_check
+from src.llm_client import _clean_llm_response, generate_card_name, health_check, warmup
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -316,3 +316,53 @@ def test_clean_llm_response_empty_string() -> None:
 def test_clean_llm_response_think_tags_only_becomes_empty() -> None:
     raw = "<think>just thinking</think>"
     assert _clean_llm_response(raw) == ""
+
+
+# ---------------------------------------------------------------------------
+# warmup
+# ---------------------------------------------------------------------------
+
+
+def test_warmup_success_does_not_raise() -> None:
+    mock_resp = _make_urlopen_mock({"response": "OK", "done": True})
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        warmup(SAMPLE_CONFIG, timeout=10)  # should complete without raising
+
+
+def test_warmup_sends_to_generate_endpoint() -> None:
+    mock_resp = _make_urlopen_mock({"response": "OK"})
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        warmup(SAMPLE_CONFIG, timeout=10)
+    req = mock_urlopen.call_args[0][0]
+    assert req.full_url.endswith("/api/generate")
+
+
+def test_warmup_uses_configured_model() -> None:
+    mock_resp = _make_urlopen_mock({"response": "OK"})
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        warmup(SAMPLE_CONFIG, timeout=10)
+    req = mock_urlopen.call_args[0][0]
+    payload = json.loads(req.data)
+    assert payload["model"] == "qwen3:8b"
+
+
+def test_warmup_uses_provided_timeout() -> None:
+    mock_resp = _make_urlopen_mock({"response": "OK"})
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        warmup(SAMPLE_CONFIG, timeout=99)
+    _, kwargs = mock_urlopen.call_args
+    assert kwargs.get("timeout") == 99
+
+
+def test_warmup_timeout_error_does_not_raise() -> None:
+    import socket
+    with patch("urllib.request.urlopen", side_effect=socket.timeout("timed out")):
+        warmup(SAMPLE_CONFIG, timeout=1)  # should log warning, not raise
+
+
+def test_warmup_url_error_does_not_raise() -> None:
+    with patch(
+        "urllib.request.urlopen",
+        side_effect=urllib.error.URLError("connection refused"),
+    ):
+        warmup(SAMPLE_CONFIG, timeout=1)  # should log warning, not raise
