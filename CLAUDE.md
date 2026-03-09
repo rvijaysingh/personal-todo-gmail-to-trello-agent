@@ -7,8 +7,8 @@ known issues and working patterns.
 ## Purpose
 An automated agent that monitors Gmail for starred emails, creates
 corresponding Trello cards with an LLM-generated actionable task
-name and full email details in the card description, then unstars
-the email and applies a "processed" label. Runs on a schedule via
+name and full email details in the card description, then applies
+a "processed" label. The star is preserved. Runs on a schedule via
 Windows Task Scheduler.
 
 ## Development Loop
@@ -25,8 +25,8 @@ Windows Task Scheduler.
 - LLM: Ollama running locally at http://localhost:11434
   (model name specified in global config, currently qwen3:8b).
   Used only for generating actionable card names from email content.
-- Gmail: Google API Python client with OAuth2 for reading emails,
-  removing stars, and applying labels. NOT IMAP.
+- Gmail: Google API Python client with OAuth2 for reading emails
+  and applying labels. NOT IMAP.
 - Trello: REST API (key + token auth) for card creation.
 - No browser automation. All interactions are API-based.
 
@@ -64,7 +64,7 @@ gmail-to-trello-agent/
   src/
     __init__.py
     config_loader.py           # Loads global .env.json + agent_config.json
-    gmail_client.py            # Gmail API: fetch starred, unstar, apply label
+    gmail_client.py            # Gmail API: fetch starred, apply label
     trello_client.py           # Trello API: create card, check for duplicates
     card_builder.py            # Builds card name (LLM or fallback) and description
     llm_client.py              # Ollama API wrapper with health check
@@ -177,7 +177,7 @@ Step 4 - Dedup Check (if enabled):
 - Query emails_processed.db for this gmail_message_id with
   status = 'success'.
 - If found, skip this email (log as "already processed, skipping").
-- This is a safety net for cases where the star was not removed
+- This is a safety net for cases where the label was not applied
   due to a partial failure on a previous run.
 
 Step 5 - Create Trello Card:
@@ -186,10 +186,11 @@ Step 5 - Create Trello Card:
 - Capture the returned card ID and URL.
 
 Step 6 - Post-Processing on Gmail:
-- Remove the star from the email.
 - Apply the "Agent/Added-To-Trello" label. If the label does not
   exist in Gmail, log an error but do not fail. The label must be
   pre-created by the user.
+- The star is intentionally preserved so the user can still see
+  which emails triggered card creation.
 
 Step 7 - Record to Database:
 - Insert a row into emails_processed with all metadata,
@@ -205,12 +206,14 @@ Step 7 - Record to Database:
   oldest is furthest down. Most recent items are always most visible.
 
 ### Crash Safety
-- Each email is fully processed (Trello card created, star removed,
-  label applied, DB recorded) before moving to the next.
-- If the agent crashes mid-batch, unprocessed emails remain starred
-  and will be picked up on the next run.
-- If the Trello card was created but the star removal failed, the
-  dedup check on the next run prevents a duplicate card.
+- Each email is fully processed (Trello card created, label applied,
+  DB recorded) before moving to the next.
+- If the agent crashes mid-batch, unprocessed emails remain without
+  the Agent/Added-To-Trello label and will be picked up on the
+  next run.
+- If the Trello card was created but the label application failed,
+  the dedup check on the next run prevents a duplicate card.
+
 
 ## Database Schema
 
@@ -223,13 +226,12 @@ CREATE TABLE IF NOT EXISTS emails_processed (
     sender TEXT,
     email_date TEXT,
     generated_card_name TEXT,
-    card_name_source TEXT CHECK(card_name_source IN ('llm', 'fallback')),
+    card_name_source TEXT CHECK(card_name_source IN ('anthropic', 'ollama', 'fallback')),
     trello_card_id TEXT,
     trello_card_url TEXT,
     status TEXT NOT NULL CHECK(status IN (
         'success',
         'failed_trello_create',
-        'failed_gmail_unstar',
         'failed_gmail_label',
         'skipped_dedup'
     )),
@@ -288,19 +290,20 @@ model may not be loaded.
 Trello API could be down, return errors, or reject the card
 (e.g., description too long despite truncation, list archived).
 - Mitigation: On Trello API failure, record the email in the DB
-  with status 'failed_trello_create' and the error. Do NOT remove
-  the star so the email is retried on the next run.
+  with status 'failed_trello_create' and the error. Do NOT apply
+  the label so the email is retried on the next run.
 - Mitigation: Validate that the target list ID exists on startup.
   If the list is not found, exit immediately with a clear error.
 
-### Duplicate Cards (Likelihood: Medium)
-If the star removal fails after card creation, the next run would
-re-process the same email.
-- Mitigation: The dedup check queries emails_processed.db by
-  gmail_message_id before creating a card.
-- Mitigation: As a secondary check, the gmail_message_id is stored
-  in the card description metadata line, allowing manual
-  identification if needed.
+### Duplicate Cards (Likelihood: Low)
+If the label application fails after card creation, the next run
+could re-process the same email.
+- Mitigation: Primary safeguard is the Gmail query itself —
+  "-label:Agent/Added-To-Trello" excludes processed emails from
+  results entirely.
+- Mitigation: Secondary safeguard is the DB dedup check, which
+  queries emails_processed.db by gmail_message_id before creating
+  a card.
 
 ### Email Body Encoding Issues (Likelihood: Medium)
 Emails may contain unusual encodings, inline images, or heavily
