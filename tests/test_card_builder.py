@@ -269,10 +269,10 @@ def test_generate_card_name_fallback_when_llm_raises() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_build_card_description_starts_with_bullet_see_header() -> None:
+def test_build_card_description_starts_with_sacrificial_separator() -> None:
     email = make_email(subject="Invoice from supplier", sender="Bob <bob@example.com>")
     desc = build_card_description(email)
-    assert desc.startswith('\u2022 See "Invoice from supplier" email from Bob <bob@example.com>')
+    assert desc.startswith("------")
 
 
 def test_build_card_description_header_format() -> None:
@@ -282,17 +282,21 @@ def test_build_card_description_header_format() -> None:
         email_date="2026-03-08T10:00:00+00:00",
     )
     desc = build_card_description(email)
-    first_line = desc.split("\n")[0]
-    assert first_line == '\u2022 See "Q3 Board Deck" email from Alice <alice@example.com> on March 8, 2026'
+    lines = desc.split("\n")
+    # Line 0: sacrificial "------", line 1: bullet metadata, line 2: second "------"
+    assert lines[0] == "------"
+    assert lines[1] == '\u2022 See "Q3 Board Deck" email from Alice <alice@example.com> on March 8, 2026'
+    assert lines[2] == "------"
 
 
-def test_build_card_description_has_separator_and_blank_line_after_header() -> None:
+def test_build_card_description_has_blank_line_then_body_after_second_separator() -> None:
     email = make_email()
     desc = build_card_description(email)
     lines = desc.split("\n")
-    # Line 0: "• See ..." header, line 1: "------", line 2: blank, line 3+: body
-    assert lines[1] == "------"
-    assert lines[2] == ""
+    # Line 0: "------" (sacrificial), line 1: "• See ...", line 2: "------" (body separator),
+    # line 3: blank, line 4+: body
+    assert lines[2] == "------"
+    assert lines[3] == ""
 
 
 def test_build_card_description_body_appears_after_separator() -> None:
@@ -300,7 +304,9 @@ def test_build_card_description_body_appears_after_separator() -> None:
     email = make_email(body=body)
     desc = build_card_description(email)
     assert body in desc
-    # Body must come after the "------\n\n" separator
+    # Body must start after the second "------\n\n" (metadata/body boundary).
+    # The full string is: "------\n• See ...\n------\n\n[body]"
+    # desc.index("\n------\n\n") finds the boundary after the bullet line.
     sep = "\n------\n\n"
     sep_pos = desc.index(sep)
     assert desc[sep_pos + len(sep):].startswith(body)
@@ -348,9 +354,9 @@ def test_build_card_description_total_length_within_max_chars_after_truncation()
 
 
 def test_build_card_description_truncation_with_custom_max_chars() -> None:
-    # max_chars=300 is large enough for the header ("• See ..." ~76 chars) +
-    # separator (9 chars) + truncation notice (~75 chars) = ~160 chars,
-    # leaving ~140 chars of body.
+    # max_chars=300 is large enough for the header ("------\n• See ...\n------"
+    # ~89 chars) + separator ("\n\n" = 2 chars) + truncation notice (~75 chars)
+    # = ~166 chars, leaving ~134 chars of body.
     email = make_email(body="Y" * 500)
     desc = build_card_description(email, max_chars=300)
     assert len(desc) <= 300

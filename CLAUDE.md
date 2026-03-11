@@ -171,11 +171,15 @@ Step 2 - Generate Card Name (three-tier fallback):
 - Log the card_name_source: "anthropic", "ollama", or "fallback".
 
 Step 3 - Build Card Description:
-- Line 1 (bullet): - See "[subject]" email from [sender] on [formatted date]
+- Line 1: ------ (sacrificial separator — absorbs Trello mobile's large-font
+  rendering of the first content block; a horizontal rule looks identical at
+  any font size)
+- Line 2 (bullet): • See "[subject]" email from [sender] on [formatted date]
+  Uses the unicode bullet character (U+2022) to avoid markdown list rendering.
 - Additional metadata bullets may be appended here by future agents
-  (e.g., "- Possible duplicate of: [card link]"). The card description
+  (e.g., "• Possible duplicate of: [card link]"). The card description
   format is designed to support this.
-- Separator line: ------
+- Line N: ------ (body separator)
 - Blank line
 - Email body
 - If total description exceeds trello_description_max_chars (16384):
