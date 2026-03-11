@@ -124,17 +124,16 @@ def build_card_description(email: EmailRecord, max_chars: int = 16384) -> str:
     """Build the Trello card description from an email.
 
     Format:
-        ------
         • See "<subject>" email from <sender> on <formatted date>
+
         ------
-        <blank line>
+
         <email body>
 
-    The leading "------" is a sacrificial first element: Trello mobile renders
-    the first content block in a large font, but a horizontal rule looks
-    identical at any size. Metadata bullet(s) below it render at normal size.
-    The second "------" separates metadata from the email body. Future metadata
-    lines go between the two separators (e.g. "• Possible duplicate of: [link]").
+    The blank line between the bullet(s) and "------" prevents Markdown Setext
+    heading interpretation (a line followed immediately by "------" renders as
+    an h2 heading). Future metadata bullets go between the first bullet and the
+    blank line (e.g. "• Possible duplicate of: [link]").
 
     If the total length exceeds max_chars, the body is truncated and a
     notice is appended.
@@ -149,9 +148,9 @@ def build_card_description(email: EmailRecord, max_chars: int = 16384) -> str:
     """
     formatted_date = _format_date(email.email_date)
     header = (
-        f'------\n\u2022 See "{email.subject}" email from {email.sender} on {formatted_date}\n------'
+        f'\u2022 See "{email.subject}" email from {email.sender} on {formatted_date}'
     )
-    separator = "\n\n"
+    separator = "\n\n------\n\n"
 
     full_description = header + separator + email.body
     if len(full_description) <= max_chars:
