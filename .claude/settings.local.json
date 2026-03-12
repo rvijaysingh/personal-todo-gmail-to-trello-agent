@@ -4,7 +4,8 @@
       "Bash(python:*)",
       "Bash(pytest:*)",
       "Skill(claude-api)",
-      "Bash(pip install:*)"
+      "Bash(pip install:*)",
+      "Bash(cd \"C:\\\\Users\\\\VJ\\\\VS Code Projects\\\\personal-todo-gmail-to-trello-agent\" && pip show google-api-python-client google-auth google-auth-oauthlib requests anthropic 2>&1 | grep -E \"^\\(Name|Version\\):\")"
     ]
   }
 }
