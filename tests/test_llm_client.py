@@ -9,8 +9,8 @@ from unittest.mock import MagicMock, patch
 import anthropic as anthropic_sdk
 import pytest
 
-from src.config_loader import GlobalConfig
-from src.llm_client import (
+from agent_shared.infra.config_loader import GlobalConfig
+from agent_shared.llm.client import (
     _anthropic_generate_card_name,
     _clean_llm_response,
     generate_card_name,
@@ -123,7 +123,7 @@ def test_health_check_strips_trailing_slash_from_host() -> None:
 
 
 def test_anthropic_generate_card_name_success_returns_name_and_source() -> None:
-    with patch("src.llm_client.anthropic_sdk.Anthropic") as mock_cls:
+    with patch("agent_shared.llm.client.anthropic_sdk.Anthropic") as mock_cls:
         mock_cls.return_value = _make_anthropic_client_mock("Review quarterly board deck")
         result = _anthropic_generate_card_name(
             subject="Q3 Board Deck",
@@ -139,7 +139,7 @@ def test_anthropic_generate_card_name_success_returns_name_and_source() -> None:
 
 def test_anthropic_generate_card_name_truncates_to_100_chars() -> None:
     long_text = "A" * 200
-    with patch("src.llm_client.anthropic_sdk.Anthropic") as mock_cls:
+    with patch("agent_shared.llm.client.anthropic_sdk.Anthropic") as mock_cls:
         mock_cls.return_value = _make_anthropic_client_mock(long_text)
         result = _anthropic_generate_card_name(
             subject="Long",
@@ -153,7 +153,7 @@ def test_anthropic_generate_card_name_truncates_to_100_chars() -> None:
 
 
 def test_anthropic_generate_card_name_uses_correct_model() -> None:
-    with patch("src.llm_client.anthropic_sdk.Anthropic") as mock_cls:
+    with patch("agent_shared.llm.client.anthropic_sdk.Anthropic") as mock_cls:
         mock_client = _make_anthropic_client_mock("Task name")
         mock_cls.return_value = mock_client
         _anthropic_generate_card_name(
@@ -167,7 +167,7 @@ def test_anthropic_generate_card_name_uses_correct_model() -> None:
 
 
 def test_anthropic_generate_card_name_uses_api_key() -> None:
-    with patch("src.llm_client.anthropic_sdk.Anthropic") as mock_cls:
+    with patch("agent_shared.llm.client.anthropic_sdk.Anthropic") as mock_cls:
         mock_cls.return_value = _make_anthropic_client_mock("Task name")
         _anthropic_generate_card_name(
             subject="Test",
@@ -179,7 +179,7 @@ def test_anthropic_generate_card_name_uses_api_key() -> None:
 
 
 def test_anthropic_generate_card_name_substitutes_template_placeholders() -> None:
-    with patch("src.llm_client.anthropic_sdk.Anthropic") as mock_cls:
+    with patch("agent_shared.llm.client.anthropic_sdk.Anthropic") as mock_cls:
         mock_client = _make_anthropic_client_mock("Review document")
         mock_cls.return_value = mock_client
         _anthropic_generate_card_name(
@@ -198,7 +198,7 @@ def test_anthropic_generate_card_name_substitutes_template_placeholders() -> Non
 
 def test_anthropic_generate_card_name_strips_think_tags() -> None:
     raw = "<think>reasoning</think>\nReview the document"
-    with patch("src.llm_client.anthropic_sdk.Anthropic") as mock_cls:
+    with patch("agent_shared.llm.client.anthropic_sdk.Anthropic") as mock_cls:
         mock_cls.return_value = _make_anthropic_client_mock(raw)
         result = _anthropic_generate_card_name(
             subject="Test",
@@ -218,7 +218,7 @@ def test_anthropic_generate_card_name_strips_think_tags() -> None:
 
 
 def test_anthropic_generate_card_name_auth_error_returns_none() -> None:
-    with patch("src.llm_client.anthropic_sdk.Anthropic") as mock_cls:
+    with patch("agent_shared.llm.client.anthropic_sdk.Anthropic") as mock_cls:
         mock_cls.return_value.messages.create.side_effect = (
             anthropic_sdk.AuthenticationError(
                 message="bad key",
@@ -236,7 +236,7 @@ def test_anthropic_generate_card_name_auth_error_returns_none() -> None:
 
 
 def test_anthropic_generate_card_name_rate_limit_returns_none() -> None:
-    with patch("src.llm_client.anthropic_sdk.Anthropic") as mock_cls:
+    with patch("agent_shared.llm.client.anthropic_sdk.Anthropic") as mock_cls:
         mock_cls.return_value.messages.create.side_effect = (
             anthropic_sdk.RateLimitError(
                 message="rate limited",
@@ -254,7 +254,7 @@ def test_anthropic_generate_card_name_rate_limit_returns_none() -> None:
 
 
 def test_anthropic_generate_card_name_server_error_returns_none() -> None:
-    with patch("src.llm_client.anthropic_sdk.Anthropic") as mock_cls:
+    with patch("agent_shared.llm.client.anthropic_sdk.Anthropic") as mock_cls:
         mock_cls.return_value.messages.create.side_effect = (
             anthropic_sdk.InternalServerError(
                 message="server error",
@@ -272,7 +272,7 @@ def test_anthropic_generate_card_name_server_error_returns_none() -> None:
 
 
 def test_anthropic_generate_card_name_connection_error_returns_none() -> None:
-    with patch("src.llm_client.anthropic_sdk.Anthropic") as mock_cls:
+    with patch("agent_shared.llm.client.anthropic_sdk.Anthropic") as mock_cls:
         mock_cls.return_value.messages.create.side_effect = (
             anthropic_sdk.APIConnectionError(request=MagicMock())
         )
@@ -286,7 +286,7 @@ def test_anthropic_generate_card_name_connection_error_returns_none() -> None:
 
 
 def test_anthropic_generate_card_name_empty_response_returns_none() -> None:
-    with patch("src.llm_client.anthropic_sdk.Anthropic") as mock_cls:
+    with patch("agent_shared.llm.client.anthropic_sdk.Anthropic") as mock_cls:
         mock_cls.return_value = _make_anthropic_client_mock("   ")
         result = _anthropic_generate_card_name(
             subject="Test",
@@ -486,7 +486,7 @@ def test_generate_card_name_think_tags_only_response_returns_none() -> None:
 
 def test_generate_card_name_anthropic_key_uses_anthropic_first() -> None:
     """With an API key configured, Anthropic should be tried first."""
-    with patch("src.llm_client._anthropic_generate_card_name") as mock_anthropic:
+    with patch("agent_shared.llm.client._anthropic_generate_card_name") as mock_anthropic:
         mock_anthropic.return_value = ("Anthropic name", "anthropic")
         result = generate_card_name(
             subject="Test",
@@ -501,7 +501,7 @@ def test_generate_card_name_anthropic_key_uses_anthropic_first() -> None:
 
 def test_generate_card_name_no_anthropic_key_skips_anthropic() -> None:
     """Without an API key, Anthropic should not be called."""
-    with patch("src.llm_client._anthropic_generate_card_name") as mock_anthropic:
+    with patch("agent_shared.llm.client._anthropic_generate_card_name") as mock_anthropic:
         mock_resp = _make_urlopen_mock({"response": "Ollama name"})
         with patch("urllib.request.urlopen", return_value=mock_resp):
             generate_card_name(
@@ -517,7 +517,7 @@ def test_generate_card_name_no_anthropic_key_skips_anthropic() -> None:
 def test_generate_card_name_anthropic_fails_falls_back_to_ollama() -> None:
     """If Anthropic returns None, Ollama is tried next."""
     mock_resp = _make_urlopen_mock({"response": "Ollama name"})
-    with patch("src.llm_client._anthropic_generate_card_name", return_value=None):
+    with patch("agent_shared.llm.client._anthropic_generate_card_name", return_value=None):
         with patch("urllib.request.urlopen", return_value=mock_resp):
             result = generate_card_name(
                 subject="Test",
@@ -534,7 +534,7 @@ def test_generate_card_name_anthropic_fails_falls_back_to_ollama() -> None:
 
 def test_generate_card_name_anthropic_rate_limited_falls_back_to_ollama() -> None:
     """A 429 from Anthropic should fall through to Ollama."""
-    with patch("src.llm_client.anthropic_sdk.Anthropic") as mock_cls:
+    with patch("agent_shared.llm.client.anthropic_sdk.Anthropic") as mock_cls:
         mock_cls.return_value.messages.create.side_effect = (
             anthropic_sdk.RateLimitError(
                 message="rate limited",
@@ -559,7 +559,7 @@ def test_generate_card_name_anthropic_rate_limited_falls_back_to_ollama() -> Non
 
 def test_generate_card_name_both_fail_returns_none() -> None:
     """If Anthropic and Ollama both fail, return None."""
-    with patch("src.llm_client._anthropic_generate_card_name", return_value=None):
+    with patch("agent_shared.llm.client._anthropic_generate_card_name", return_value=None):
         with patch(
             "urllib.request.urlopen",
             side_effect=urllib.error.URLError("connection refused"),

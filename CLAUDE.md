@@ -22,8 +22,12 @@ Windows Task Scheduler.
 
 ## Architecture Constraints
 - Runtime: Windows 10/11 server, Python 3.13
+- Shared library: agent-shared-library (installed via `pip install -e`)
+  provides config loading, SQLite DB, Trello client, and LLM client.
+  Located at a sibling repo path; source at `agent_shared` package.
 - LLM (primary): Anthropic API (Claude Haiku 4.5) for generating
-  actionable card names from email content. API key in global config.
+  actionable card names from email content. API key in global config
+  under `anthropic_api_keys["gmail-to-trello"]`.
 - LLM (fallback): Ollama running locally at http://localhost:11434
   (model name specified in global config, currently qwen3:8b).
   Used if Anthropic API is unavailable or not configured.
@@ -65,15 +69,16 @@ gmail-to-trello-agent/
     card_name.md               # LLM prompt for generating actionable task name
   src/
     __init__.py
-    config_loader.py           # Loads global .env.json + agent_config.json
     gmail_client.py            # Gmail API: fetch starred, apply label
-    trello_client.py           # Trello API: create card, check for duplicates
     card_builder.py            # Builds card name (LLM or fallback) and description
-    llm_client.py              # LLM wrapper: Anthropic API (primary), Ollama (fallback)
-    db.py                      # SQLite: emails_processed table, dedup queries
     orchestrator.py            # Main entry point and pipeline coordinator
     models.py                  # Shared data structures (EmailRecord,
                                # CardPayload, ProcessingResult)
+  # Shared library (agent_shared package, installed via pip install -e):
+  #   agent_shared.infra.config_loader  — GlobalConfig, AgentConfig, load_config
+  #   agent_shared.infra.db             — init_db, insert_record, check_duplicate, get_last_run_time
+  #   agent_shared.trello.client        — create_card, validate_list, TrelloError
+  #   agent_shared.llm.client           — generate_card_name, health_check
   tests/
     test_gmail_client.py
     test_trello_client.py
@@ -100,20 +105,20 @@ Two config sources plus LLM prompts:
    Path resolved from ENV_CONFIG_PATH environment variable, falling
    back to ../config/.env.json relative to repo root.
    Required fields for this agent:
-   - trello_api_key
-   - trello_api_token
-   - trello_board_id (the Todo board: oNIV6Mcq)
-   - ollama_host (default: http://localhost:11434)
+   - trello.api_key
+   - trello.token
+   - trello.personal_todo_board_id (the Todo board: oNIV6Mcq)
+   - ollama_endpoint (default: http://localhost:11434)
    - ollama_model (default: qwen3:8b)
-   - gmail_oauth_credentials_path (path to credentials.json)
-   - gmail_oauth_token_path (path to token.json)
+   - gmail_oauth.gmail_oauth_credentials_path (path to credentials.json)
+   - gmail_oauth.gmail_oauth_token_path (path to token.json)
+   - anthropic_api_keys.gmail-to-trello (optional — Anthropic API key
+     for this agent; omit to use Ollama-only mode)
 
 2. config/agent_config.json (gitignored, machine-local): agent-specific
    settings. config/agent_config.json.example is committed as a
    template showing the required schema with placeholder values.
    Fields:
-   - anthropic_api_key: API key for Anthropic (optional — if missing,
-     falls back to Ollama; this key is specific to this Gmail-to-Trello Agent)
    - trello_list_id: ID of the "Backlog to Triage (incl. Gmail)" list
    - first_run_lookback_days: default 7
    - gmail_processed_label: default "Agent/Added-To-Trello"

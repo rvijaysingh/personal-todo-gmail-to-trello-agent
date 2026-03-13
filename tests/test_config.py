@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from src.config_loader import (
+from agent_shared.infra.config_loader import (
     AgentConfig,
     ConfigError,
     GlobalConfig,

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from src.db import check_duplicate, get_last_run_time, init_db, insert_record
+from agent_shared.infra.db import check_duplicate, get_last_run_time, init_db, insert_record
 from src.models import CardPayload, EmailRecord, ProcessingResult
 
 

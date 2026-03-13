@@ -9,7 +9,7 @@ from typing import Optional
 
 import anthropic as anthropic_sdk
 
-from src.config_loader import GlobalConfig
+from agent_shared.infra.config_loader import GlobalConfig
 
 logger = logging.getLogger(__name__)
 
@@ -224,7 +224,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG, format="%(levelname)s: %(message)s")
 
     try:
-        from src.config_loader import load_config
+        from agent_shared.infra.config_loader import load_config
 
         gc, ac = load_config()
     except Exception as exc:

@@ -126,7 +126,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
     try:
-        from src.config_loader import load_config
+        from agent_shared.infra.config_loader import load_config
 
         gc, ac = load_config()
     except Exception as exc:

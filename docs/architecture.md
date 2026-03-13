@@ -68,12 +68,13 @@ processing loop. Delegates every domain concern to a dedicated module.
 Collects run statistics and logs a summary on completion. No external API
 calls of its own.
 
-**`src/config_loader.py`** — Loads and validates the two-tier configuration:
-a global `.env.json` (secrets, shared across agents) and a local
-`agent_config.json` (agent-specific tuning). Raises `ConfigError` on any
-missing or invalid field so the agent fails fast at startup rather than
+**`agent_shared.infra.config_loader`** — Loads and validates the two-tier
+configuration: a global `.env.json` (secrets, shared across agents) and a
+local `agent_config.json` (agent-specific tuning). Raises `ConfigError` on
+any missing or invalid field so the agent fails fast at startup rather than
 mid-run. Resolves the global config path from the `ENV_CONFIG_PATH`
-environment variable with a sensible repo-local default.
+environment variable with a sensible repo-local default. Exposes
+`GlobalConfig` and `AgentConfig` dataclasses.
 
 **`src/gmail_client.py`** — Wraps the Google API Python client for Gmail.
 Handles OAuth2 token refresh automatically; provides a `--reauth` CLI flag
@@ -84,11 +85,12 @@ processed label. Stars are intentionally not removed. All operations use
 the `gmail.modify` scope. Depends on: `google-api-python-client`,
 `google-auth-oauthlib`.
 
-**`src/trello_client.py`** — Thin wrapper over the Trello REST API using
-`requests`. Exposes `validate_list` (startup sanity check) and `create_card`
-(always posts with `pos="top"` for correct ordering). Raises `TrelloError`
-on any HTTP error or connection failure so the orchestrator can record the
-failure and leave the email unprocessed for retry. Depends on: `requests`.
+**`agent_shared.trello.client`** — Thin wrapper over the Trello REST API
+using `requests`. Exposes `validate_list` (startup sanity check) and
+`create_card` (always posts with `pos="top"` for correct ordering). Raises
+`TrelloError` on any HTTP error or connection failure so the orchestrator
+can record the failure and leave the email unprocessed for retry.
+Depends on: `requests`.
 
 **`src/card_builder.py`** — Pure functions for building card content from an
 `EmailRecord`. `generate_card_name` calls the `LlmClientFn` callable and
@@ -96,7 +98,7 @@ falls back to `_clean_subject` on any failure. `build_card_description`
 assembles the header line and full body, truncating with a notice if the
 total exceeds Trello's 16,384-character limit. No external dependencies.
 
-**`src/llm_client.py`** — Three-tier LLM wrapper. `health_check` pings
+**`agent_shared.llm.client`** — Three-tier LLM wrapper. `health_check` pings
 Ollama's `/api/tags` at startup. `generate_card_name` attempts:
 (1) Anthropic API (`claude-haiku-4-5-20251001`) if `anthropic_api_key` is
 configured; (2) Ollama `/api/generate` as local fallback; returning
@@ -104,11 +106,12 @@ configured; (2) Ollama `/api/generate` as local fallback; returning
 to the subject line. Strips `<think>` tags from reasoning-model output.
 Depends on: `anthropic` SDK (tier 1), stdlib `urllib.request` (tier 2).
 
-**`src/db.py`** — SQLite processing ledger using `sqlite3` stdlib. Creates
-the `emails_processed` table on first run. Provides `insert_record` (uses
-`INSERT OR REPLACE` so retries overwrite failed rows), `check_duplicate`
-(only `status='success'` rows count), and `get_last_run_time` (returns
-`None` on an empty table, signalling first run). Depends on: stdlib only.
+**`agent_shared.infra.db`** — SQLite processing ledger using `sqlite3`
+stdlib. Creates the `emails_processed` table on first run. Provides
+`insert_record` (uses `INSERT OR REPLACE` so retries overwrite failed rows),
+`check_duplicate` (only `status='success'` rows count), and
+`get_last_run_time` (returns `None` on an empty table, signalling first run).
+Depends on: stdlib only.
 
 **`src/models.py`** — Shared dataclasses: `EmailRecord` (raw email fields),
 `CardPayload` (name + description + source), `ProcessingResult` (outcome,

@@ -9,11 +9,14 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
-from src import card_builder, db, gmail_client, llm_client, trello_client
+from src import card_builder, gmail_client
 from src.card_builder import LlmClientFn
-from src.config_loader import AgentConfig, ConfigError, GlobalConfig, load_config
 from src.models import CardPayload, EmailRecord, ProcessingResult
-from src.trello_client import TrelloError
+from agent_shared.infra.config_loader import AgentConfig, ConfigError, GlobalConfig, load_config
+from agent_shared.infra import db
+from agent_shared.llm import client as llm_client
+from agent_shared.trello import client as trello_client
+from agent_shared.trello.client import TrelloError
 
 logger = logging.getLogger(__name__)
 
@@ -230,8 +233,9 @@ def run(
     db.init_db(ac.db_path)
 
     # Step 4 — Log LLM provider availability
+    anthropic_api_key = gc.anthropic_api_keys.get("gmail-to-trello", "")
     ollama_ok = llm_client.health_check(gc)
-    if ac.anthropic_api_key:
+    if anthropic_api_key:
         if ollama_ok:
             logger.info(
                 "LLM: Anthropic API (Haiku 4.5) configured as primary, Ollama as fallback"
@@ -301,7 +305,7 @@ def run(
         llm_client.generate_card_name,
         config=gc,
         timeout=ac.llm_timeout_seconds,
-        anthropic_api_key=ac.anthropic_api_key,
+        anthropic_api_key=anthropic_api_key,
     )
 
     # Step 9 — Fetch starred emails (oldest first), excluding already-processed ones

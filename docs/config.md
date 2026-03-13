@@ -45,6 +45,9 @@ while Ollama settings are top-level keys:
   "gmail_oauth": {
     "gmail_oauth_credentials_path": "<absolute-path-to-credentials.json>",
     "gmail_oauth_token_path":       "<absolute-path-to-token.json>"
+  },
+  "anthropic_api_keys": {
+    "gmail-to-trello": "<your-anthropic-api-key-or-omit-for-ollama-only>"
   }
 }
 ```
@@ -58,9 +61,10 @@ while Ollama settings are top-level keys:
 | `ollama_model` | string | Model name to use for card name generation | `"qwen3:8b"` |
 | `gmail_oauth.gmail_oauth_credentials_path` | string | Absolute path to `credentials.json` downloaded from Google Cloud Console | `"C:/secrets/credentials.json"` |
 | `gmail_oauth.gmail_oauth_token_path` | string | Absolute path where the OAuth2 token file will be stored after first auth | `"C:/secrets/token.json"` |
+| `anthropic_api_keys.gmail-to-trello` | string | *(optional)* Anthropic API key used by this agent for card name generation. When present, Anthropic Haiku 4.5 is used as the primary LLM; Ollama is the fallback. Omit the key entirely to use Ollama-only mode. | `"sk-ant-..."` |
 
-All fields are required. The agent exits at startup with a message naming
-the exact missing field path (e.g., `"Missing required field 'trello.api_key'"`).
+All required fields are validated at startup. The agent exits with a message
+naming the exact missing field path (e.g., `"Missing required field 'trello.api_key'"`).
 
 ---
 

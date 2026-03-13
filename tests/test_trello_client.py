@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from src.trello_client import TrelloError, create_card, validate_list
+from agent_shared.trello.client import TrelloError, create_card, validate_list
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

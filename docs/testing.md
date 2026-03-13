@@ -25,15 +25,15 @@ All tests run in under 3 seconds. No network calls, no disk I/O outside of
 
 | File | What it covers |
 |------|---------------|
-| `test_config.py` | `config_loader.load_config`: nested key extraction, `ENV_CONFIG_PATH` env var override, missing files, missing fields, malformed JSON, type coercion for `int`/`bool` fields |
-| `test_db.py` | `db.init_db`, `insert_record`, `check_duplicate`, `get_last_run_time`: table creation, `INSERT OR REPLACE` retry semantics, dedup only counts `status='success'` rows, `None` returned on empty table |
-| `test_llm_client.py` | `llm_client.health_check`, `generate_card_name`: successful generation, `<think>` tag stripping, markdown code-fence stripping, name truncation at 100 chars, all failure modes (URL error, bad JSON, missing `response` key, empty response), Ollama timeout |
+| `test_config.py` | `agent_shared.infra.config_loader.load_config`: nested key extraction, `ENV_CONFIG_PATH` env var override, missing files, missing fields, malformed JSON, type coercion for `int`/`bool` fields |
+| `test_db.py` | `agent_shared.infra.db.init_db`, `insert_record`, `check_duplicate`, `get_last_run_time`: table creation, `INSERT OR REPLACE` retry semantics, dedup only counts `status='success'` rows, `None` returned on empty table |
+| `test_llm_client.py` | `agent_shared.llm.client.health_check`, `generate_card_name`: successful generation, `<think>` tag stripping, markdown code-fence stripping, name truncation at 100 chars, all failure modes (URL error, bad JSON, missing `response` key, empty response), Ollama timeout |
 | `test_gmail_client.py` | `gmail_client.fetch_starred_emails`, `unstar_email`, `apply_label`, `_decode_base64url`, `_extract_body`, `_strip_html`: base64url padding, recursive MIME extraction (plain > multipart > html), HTML tag stripping, pagination, oldest-first sort, error-email skipping, label-not-found logging without raising |
-| `test_trello_client.py` | `trello_client.validate_list`, `create_card`: `pos="top"` always sent, correct list ID, auth credentials, endpoint URL, HTTP 4xx/5xx errors wrapped as `TrelloError`, connection failure, missing `id` field in response |
+| `test_trello_client.py` | `agent_shared.trello.client.validate_list`, `create_card`: `pos="top"` always sent, correct list ID, auth credentials, endpoint URL, HTTP 4xx/5xx errors wrapped as `TrelloError`, connection failure, missing `id` field in response |
 | `test_card_builder.py` | `card_builder._clean_subject`, `_format_date`, `generate_card_name`, `build_card_description`: all `Re:`/`Fwd:`/`FW:` prefix variants (case-insensitive, chained), Windows-safe date formatting, LLM path and fallback path, description header format, truncation at custom `max_chars`, truncation notice exact text, body prefix preserved |
 | `test_orchestrator.py` | `orchestrator._setup_rotating_logger`, `_process_email`, `run`: rotating handler added to root logger, success path, Trello failure (no unstar, DB record), unstar failure (card info preserved), apply_label failure, card name source recorded, first/subsequent run detection, dedup skip, dedup disabled, invalid Trello list exits, config error exits, Ollama down continues, failed email does not stop loop |
 
-**Total: 197 tests**
+**Total: 220 tests**
 
 ---
 

@@ -11,10 +11,10 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from src.config_loader import AgentConfig, ConfigError, GlobalConfig
+from agent_shared.infra.config_loader import AgentConfig, ConfigError, GlobalConfig
 from src.models import CardPayload, EmailRecord, ProcessingResult
 from src.orchestrator import _days_since_last_run, _process_email, _setup_rotating_logger, run
-from src.trello_client import TrelloError
+from agent_shared.trello.client import TrelloError
 
 
 # ---------------------------------------------------------------------------
@@ -80,9 +80,9 @@ def success_result(msg_id: str = "msg_001") -> ProcessingResult:
 # Patch targets for _process_email dependencies
 _GEN_NAME = "src.card_builder.generate_card_name"
 _BUILD_DESC = "src.card_builder.build_card_description"
-_CREATE_CARD = "src.trello_client.create_card"
+_CREATE_CARD = "agent_shared.trello.client.create_card"
 _APPLY_LABEL = "src.gmail_client.apply_label"
-_INSERT = "src.db.insert_record"
+_INSERT = "agent_shared.infra.db.insert_record"
 
 _DEFAULT_CARD_NAME = ("Review the document", "anthropic")
 _DEFAULT_CARD_URL = ("card_abc", "https://trello.com/c/abc")
@@ -351,12 +351,12 @@ def run_env():
             "src.orchestrator.load_config", return_value=(gc, ac)
         ),
         "setup_logger": patch("src.orchestrator._setup_rotating_logger"),
-        "init_db": patch("src.db.init_db"),
+        "init_db": patch("agent_shared.infra.db.init_db"),
         "health_check": patch(
-            "src.llm_client.health_check", return_value=True
+            "agent_shared.llm.client.health_check", return_value=True
         ),
         "validate_list": patch(
-            "src.trello_client.validate_list", return_value=True
+            "agent_shared.trello.client.validate_list", return_value=True
         ),
         "load_prompt": patch(
             "src.orchestrator._load_prompt_template", return_value="template"
@@ -365,12 +365,12 @@ def run_env():
             "src.gmail_client.build_service", return_value=MagicMock()
         ),
         "get_last_run": patch(
-            "src.db.get_last_run_time", return_value=datetime(2026, 3, 1)
+            "agent_shared.infra.db.get_last_run_time", return_value=datetime(2026, 3, 1)
         ),
         "fetch_emails": patch(
             "src.gmail_client.fetch_starred_emails", return_value=[]
         ),
-        "check_dup": patch("src.db.check_duplicate", return_value=False),
+        "check_dup": patch("agent_shared.infra.db.check_duplicate", return_value=False),
         "process_email": patch(
             "src.orchestrator._process_email", return_value=success_result()
         ),
