@@ -886,6 +886,73 @@ def test_retry_startup_check_non_retryable_propagates_immediately() -> None:
     mock_sleep.assert_not_called()
 
 
+def test_retry_startup_check_predicate_false_raises_immediately() -> None:
+    """retryable_predicate returning False causes immediate re-raise on first attempt."""
+    attempt = [0]
+
+    def fn():
+        attempt[0] += 1
+        raise OSError("non-retryable variant")
+
+    with patch("src.orchestrator.time.sleep") as mock_sleep:
+        with pytest.raises(OSError, match="non-retryable variant"):
+            _retry_startup_check(
+                fn,
+                max_attempts=3,
+                backoff_seconds=5,
+                retryable_exceptions=(OSError,),
+                label="test",
+                retryable_predicate=lambda exc: False,
+            )
+    assert attempt[0] == 1
+    mock_sleep.assert_not_called()
+
+
+def test_retry_startup_check_predicate_true_retries_normally() -> None:
+    """retryable_predicate returning True allows normal retry behaviour."""
+    attempt = [0]
+
+    def fn():
+        attempt[0] += 1
+        if attempt[0] < 3:
+            raise OSError("transient")
+        return "ok"
+
+    with patch("src.orchestrator.time.sleep"):
+        result = _retry_startup_check(
+            fn,
+            max_attempts=3,
+            backoff_seconds=5,
+            retryable_exceptions=(OSError,),
+            label="test",
+            retryable_predicate=lambda exc: True,
+        )
+    assert result == "ok"
+    assert attempt[0] == 3
+
+
+def test_retry_startup_check_no_predicate_retries_all_matching() -> None:
+    """When retryable_predicate is None all matching exceptions are retried."""
+    attempt = [0]
+
+    def fn():
+        attempt[0] += 1
+        if attempt[0] < 2:
+            raise OSError("transient")
+        return "ok"
+
+    with patch("src.orchestrator.time.sleep"):
+        result = _retry_startup_check(
+            fn,
+            max_attempts=3,
+            backoff_seconds=5,
+            retryable_exceptions=(OSError,),
+            label="test",
+        )
+    assert result == "ok"
+    assert attempt[0] == 2
+
+
 # ---------------------------------------------------------------------------
 # run() — retry behavior for transient startup errors
 # ---------------------------------------------------------------------------

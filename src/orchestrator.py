@@ -91,6 +91,7 @@ def _retry_startup_check(
     backoff_seconds: int,
     retryable_exceptions: tuple[type[Exception], ...],
     label: str,
+    retryable_predicate: Callable[[Exception], bool] | None = None,
 ) -> _T:
     """Call fn() up to max_attempts times, retrying on transient network errors.
 
@@ -104,6 +105,10 @@ def _retry_startup_check(
         backoff_seconds: Seconds to sleep between attempts.
         retryable_exceptions: Exception types that warrant a retry.
         label: Human-readable label used in log messages.
+        retryable_predicate: Optional callable that takes the caught exception
+            and returns True if it should be retried, False if it should be
+            re-raised immediately. Applied only to exceptions that match
+            retryable_exceptions. If None, all matching exceptions are retried.
 
     Returns:
         The return value of fn() on success.
@@ -117,6 +122,8 @@ def _retry_startup_check(
         try:
             return fn()
         except retryable_exceptions as exc:
+            if retryable_predicate is not None and not retryable_predicate(exc):
+                raise
             last_exc = exc
             if attempt < max_attempts:
                 logger.warning(
@@ -271,8 +278,9 @@ def run(
     5.  Validate the target Trello list — retries up to 3× on TrelloError
         (transient DNS/connection failures); exits if list not found after retries.
     6.  Load the LLM prompt template.
-    7.  Verify IMAP credentials — retries up to 3× on OSError/timeout
-        (transient network); exits immediately on imaplib.IMAP4.error (bad creds).
+    7.  Verify IMAP credentials — retries up to 3× on OSError/timeout and
+        transient 'Lookup failed' errors; exits immediately on other
+        imaplib.IMAP4.error (bad credentials, IMAP disabled).
     8.  Detect first-run vs. subsequent run.
     9.  Fetch starred emails (sorted oldest first).
     10. Process each email through the pipeline.
@@ -378,8 +386,9 @@ def run(
                 fn=lambda: gmail_client.check_imap_auth(gc.gmail_sender, gc.gmail_password),
                 max_attempts=_STARTUP_MAX_ATTEMPTS,
                 backoff_seconds=_STARTUP_BACKOFF_SECONDS,
-                retryable_exceptions=(socket.timeout, ConnectionRefusedError, OSError),
+                retryable_exceptions=(socket.timeout, ConnectionRefusedError, OSError, imaplib.IMAP4.error),
                 label="IMAP auth check",
+                retryable_predicate=lambda exc: not isinstance(exc, imaplib.IMAP4.error) or "Lookup failed" in str(exc),
             )
             logger.info("IMAP authentication verified for %s", gc.gmail_sender)
         except imaplib.IMAP4.error as exc:

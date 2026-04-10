@@ -70,6 +70,21 @@ Total worst-case wait before giving up: ~60 seconds (2 sleeps of 30s).
 
 ---
 
+## Gmail IMAP transient "Lookup failed" error
+
+Gmail's IMAP server occasionally returns `imaplib.IMAP4.error` with the
+message "Lookup failed <token>". This is a transient server-side error,
+not a credential failure, and resolves on its own within minutes. It must
+be retried rather than treated as a hard auth failure.
+
+Fix: `_retry_startup_check` now accepts an optional `retryable_predicate`.
+The IMAP auth check passes a predicate that returns `True` for non-IMAP4
+exceptions (OSError, timeout, etc.) and for `imaplib.IMAP4.error` only when
+"Lookup failed" appears in the message. All other `imaplib.IMAP4.error`
+values (bad password, IMAP disabled) are re-raised immediately.
+
+---
+
 ## Migration to agent_shared (2026-03)
 
 ### What moved to agent_shared
