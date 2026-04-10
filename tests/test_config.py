@@ -178,15 +178,17 @@ def test_load_config_missing_ollama_endpoint_raises(tmp_path: Path) -> None:
         load_config(str(env_file), str(agent_file))
 
 
-def test_load_config_missing_gmail_oauth_section_raises(tmp_path: Path) -> None:
+def test_load_config_missing_gmail_oauth_section_succeeds(tmp_path: Path) -> None:
+    """gmail_oauth section is optional — missing it loads with empty string defaults."""
     bad_env = {k: v for k, v in VALID_ENV_CONFIG.items() if k != "gmail_oauth"}
     env_file = tmp_path / ".env.json"
     agent_file = tmp_path / "agent_config.json"
     write_json(env_file, bad_env)
     write_json(agent_file, VALID_AGENT_CONFIG)
 
-    with pytest.raises(ConfigError, match="gmail_oauth"):
-        load_config(str(env_file), str(agent_file))
+    gc, _ = load_config(str(env_file), str(agent_file))
+    assert gc.gmail_oauth_credentials_path == ""
+    assert gc.gmail_oauth_token_path == ""
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +219,8 @@ def test_load_config_missing_ollama_model_raises(tmp_path: Path) -> None:
         load_config(str(env_file), str(agent_file))
 
 
-def test_load_config_missing_credentials_path_raises(tmp_path: Path) -> None:
+def test_load_config_missing_credentials_path_returns_empty(tmp_path: Path) -> None:
+    """gmail_oauth_credentials_path is optional — missing it returns empty string."""
     bad_oauth = {"gmail_oauth_token_path": "/t.json"}  # missing gmail_oauth_credentials_path
     bad_env = {**VALID_ENV_CONFIG, "gmail_oauth": bad_oauth}
     env_file = tmp_path / ".env.json"
@@ -225,8 +228,8 @@ def test_load_config_missing_credentials_path_raises(tmp_path: Path) -> None:
     write_json(env_file, bad_env)
     write_json(agent_file, VALID_AGENT_CONFIG)
 
-    with pytest.raises(ConfigError, match="credentials_path"):
-        load_config(str(env_file), str(agent_file))
+    gc, _ = load_config(str(env_file), str(agent_file))
+    assert gc.gmail_oauth_credentials_path == ""
 
 
 # ---------------------------------------------------------------------------

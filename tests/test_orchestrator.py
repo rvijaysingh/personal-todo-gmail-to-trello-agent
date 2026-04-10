@@ -1,9 +1,11 @@
 """Tests for src/orchestrator.py.
 
-All external dependencies (Gmail API, Trello API, Ollama, SQLite, filesystem)
+All external dependencies (Gmail IMAP, Trello API, Ollama, SQLite, filesystem)
 are mocked — no live network calls or disk I/O are made.
 """
 
+import imaplib
+import socket
 import sys
 from contextlib import ExitStack
 from datetime import datetime
@@ -13,7 +15,7 @@ import pytest
 
 from agent_shared.infra.config_loader import AgentConfig, ConfigError, GlobalConfig
 from src.models import CardPayload, EmailRecord, ProcessingResult
-from src.orchestrator import _days_since_last_run, _process_email, _setup_rotating_logger, run
+from src.orchestrator import _days_since_last_run, _process_email, _retry_startup_check, _setup_rotating_logger, run
 from agent_shared.trello.client import TrelloError
 
 
@@ -29,8 +31,8 @@ def make_gc() -> GlobalConfig:
         trello_board_id="board_001",
         ollama_host="http://localhost:11434",
         ollama_model="qwen3:8b",
-        gmail_oauth_credentials_path="/creds.json",
-        gmail_oauth_token_path="/token.json",
+        gmail_sender="sender@gmail.com",
+        gmail_password="app-password",
     )
 
 
@@ -87,12 +89,17 @@ _INSERT = "agent_shared.infra.db.insert_record"
 _DEFAULT_CARD_NAME = ("Review the document", "anthropic")
 _DEFAULT_CARD_URL = ("card_abc", "https://trello.com/c/abc")
 
+# Alert patch targets
+_SEND_CRASH_ALERT = "agent_shared.alerts.notifier.send_crash_alert"
+_SEND_FAILURE_SUMMARY = "agent_shared.alerts.notifier.send_failure_summary"
+
 
 def _run_process_email(
     email=None,
     gc=None,
     ac=None,
-    svc=None,
+    gmail_sender: str = "sender@gmail.com",
+    gmail_password: str = "app-password",
     llm_fn=None,
     prompt="template",
     *,
@@ -112,8 +119,6 @@ def _run_process_email(
         gc = make_gc()
     if ac is None:
         ac = make_ac()
-    if svc is None:
-        svc = MagicMock()
     if llm_fn is None:
         llm_fn = lambda s, b, t: ("Fallback name", "fallback")
 
@@ -135,7 +140,9 @@ def _run_process_email(
                 patch(_INSERT, side_effect=insert_side_effect)
             ),
         }
-        result = _process_email(email, gc, ac, svc, llm_fn, prompt)
+        result = _process_email(
+            email, gc, ac, gmail_sender, gmail_password, llm_fn, prompt
+        )
 
     return result, mocks
 
@@ -209,10 +216,18 @@ def test_process_email_success_star_is_preserved() -> None:
 
 def test_process_email_success_calls_apply_label() -> None:
     email = make_email(msg_id="msg_xyz")
-    svc = MagicMock()
+    gc = make_gc()
     ac = make_ac(gmail_processed_label="Agent/Added-To-Trello")
-    _, mocks = _run_process_email(email=email, ac=ac, svc=svc)
-    mocks["apply_label"].assert_called_once_with(svc, "msg_xyz", "Agent/Added-To-Trello")
+    _, mocks = _run_process_email(
+        email=email,
+        gc=gc,
+        ac=ac,
+        gmail_sender=gc.gmail_sender,
+        gmail_password=gc.gmail_password,
+    )
+    mocks["apply_label"].assert_called_once_with(
+        gc.gmail_sender, gc.gmail_password, "msg_xyz", "Agent/Added-To-Trello"
+    )
 
 
 def test_process_email_success_inserts_db_record() -> None:
@@ -255,7 +270,9 @@ def test_process_email_trello_error_returns_failed_status() -> None:
         stack.enter_context(patch(_APPLY_LABEL))
         stack.enter_context(patch(_INSERT))
         result = _process_email(
-            make_email(), make_gc(), make_ac(), MagicMock(), lambda s, b, t: None, "t"
+            make_email(), make_gc(), make_ac(),
+            "sender@gmail.com", "app-password",
+            lambda s, b, t: None, "t"
         )
 
     assert result.status == "failed_trello_create"
@@ -271,7 +288,9 @@ def test_process_email_trello_error_inserts_db_record() -> None:
         stack.enter_context(patch(_APPLY_LABEL))
         mock_insert = stack.enter_context(patch(_INSERT))
         _process_email(
-            make_email(), make_gc(), make_ac(), MagicMock(), lambda s, b, t: None, "t"
+            make_email(), make_gc(), make_ac(),
+            "sender@gmail.com", "app-password",
+            lambda s, b, t: None, "t"
         )
 
     mock_insert.assert_called_once()
@@ -287,7 +306,9 @@ def test_process_email_trello_error_error_message_in_result() -> None:
         stack.enter_context(patch(_APPLY_LABEL))
         stack.enter_context(patch(_INSERT))
         result = _process_email(
-            make_email(), make_gc(), make_ac(), MagicMock(), lambda s, b, t: None, "t"
+            make_email(), make_gc(), make_ac(),
+            "sender@gmail.com", "app-password",
+            lambda s, b, t: None, "t"
         )
 
     assert "Rate limited" in result.error_message
@@ -361,8 +382,8 @@ def run_env():
         "load_prompt": patch(
             "src.orchestrator._load_prompt_template", return_value="template"
         ),
-        "build_service": patch(
-            "src.gmail_client.build_service", return_value=MagicMock()
+        "check_imap_auth": patch(
+            "src.gmail_client.check_imap_auth", return_value=None
         ),
         "get_last_run": patch(
             "agent_shared.infra.db.get_last_run_time", return_value=datetime(2026, 3, 1)
@@ -374,6 +395,9 @@ def run_env():
         "process_email": patch(
             "src.orchestrator._process_email", return_value=success_result()
         ),
+        "send_crash_alert": patch(_SEND_CRASH_ALERT),
+        "send_failure_summary": patch(_SEND_FAILURE_SUMMARY),
+        "sleep": patch("src.orchestrator.time.sleep"),
     }
 
     with ExitStack() as stack:
@@ -413,6 +437,13 @@ def test_run_calls_validate_list(run_env) -> None:
     run_env["validate_list"].assert_called_once()
 
 
+def test_run_calls_imap_auth_check(run_env) -> None:
+    run()
+    run_env["check_imap_auth"].assert_called_once_with(
+        "sender@gmail.com", "app-password"
+    )
+
+
 def test_run_config_error_exits_with_code_1(run_env) -> None:
     run_env["load_config"].side_effect = ConfigError("Missing field")
     with pytest.raises(SystemExit) as exc_info:
@@ -429,6 +460,27 @@ def test_run_trello_list_not_found_exits_with_code_1(run_env) -> None:
 
 def test_run_trello_error_on_validate_exits_with_code_1(run_env) -> None:
     run_env["validate_list"].side_effect = TrelloError("Connection refused")
+    with pytest.raises(SystemExit) as exc_info:
+        run()
+    assert exc_info.value.code == 1
+
+
+def test_run_imap_auth_failure_exits_with_code_1(run_env) -> None:
+    run_env["check_imap_auth"].side_effect = imaplib.IMAP4.error("Invalid credentials")
+    with pytest.raises(SystemExit) as exc_info:
+        run()
+    assert exc_info.value.code == 1
+
+
+def test_run_imap_server_unreachable_exits_with_code_1(run_env) -> None:
+    run_env["check_imap_auth"].side_effect = socket.timeout("timed out")
+    with pytest.raises(SystemExit) as exc_info:
+        run()
+    assert exc_info.value.code == 1
+
+
+def test_run_imap_connection_refused_exits_with_code_1(run_env) -> None:
+    run_env["check_imap_auth"].side_effect = ConnectionRefusedError("refused")
     with pytest.raises(SystemExit) as exc_info:
         run()
     assert exc_info.value.code == 1
@@ -544,6 +596,14 @@ def test_run_fetch_receives_processed_label(run_env) -> None:
     assert kwargs.get("processed_label") == "Agent/Added-To-Trello"
 
 
+def test_run_fetch_receives_gmail_credentials(run_env) -> None:
+    """fetch_starred_emails is called with gmail_sender and gmail_password."""
+    run()
+    args, kwargs = run_env["fetch_emails"].call_args
+    assert args[0] == "sender@gmail.com"
+    assert args[1] == "app-password"
+
+
 def test_run_safety_cap_limits_emails_processed(run_env) -> None:
     """If fetch returns more than max_emails_per_run, only oldest N are processed."""
     ac = make_ac(max_emails_per_run=2)
@@ -593,8 +653,275 @@ def test_days_since_last_run_seven_days_returns_seven() -> None:
 def test_days_since_last_run_naive_datetime_treated_as_utc() -> None:
     """Naive datetimes (SQLite output) should be treated as UTC without raising."""
     from datetime import timedelta
-    # naive datetime (no tzinfo) — SQLite datetime('now') produces this
     naive_yesterday = datetime.utcnow() - timedelta(days=1)
     assert naive_yesterday.tzinfo is None
     result = _days_since_last_run(naive_yesterday)
     assert result == 1
+
+
+# ---------------------------------------------------------------------------
+# run() — alerting: crash on unhandled exception
+# ---------------------------------------------------------------------------
+
+
+def test_run_unhandled_exception_calls_send_crash_alert(run_env) -> None:
+    """An unexpected exception inside run() triggers send_crash_alert."""
+    run_env["init_db"].side_effect = RuntimeError("DB exploded")
+    with pytest.raises(RuntimeError):
+        run()
+    run_env["send_crash_alert"].assert_called_once()
+    call_kwargs = run_env["send_crash_alert"].call_args[1]
+    assert call_kwargs["agent_name"] == "Gmail-to-Trello"
+    assert isinstance(call_kwargs["error"], RuntimeError)
+
+
+def test_run_unhandled_exception_reraises_after_alert(run_env) -> None:
+    """After sending the crash alert, the original exception is re-raised."""
+    run_env["init_db"].side_effect = RuntimeError("DB exploded")
+    with pytest.raises(RuntimeError, match="DB exploded"):
+        run()
+
+
+def test_run_unhandled_exception_crash_alert_has_traceback(run_env) -> None:
+    """Crash alert includes a non-empty traceback string."""
+    run_env["init_db"].side_effect = RuntimeError("DB exploded")
+    with pytest.raises(RuntimeError):
+        run()
+    call_kwargs = run_env["send_crash_alert"].call_args[1]
+    assert "traceback_str" in call_kwargs
+    assert len(call_kwargs["traceback_str"]) > 0
+
+
+def test_run_unhandled_exception_crash_alert_has_credentials(run_env) -> None:
+    """Crash alert receives the Gmail credentials from GlobalConfig."""
+    run_env["init_db"].side_effect = RuntimeError("DB exploded")
+    with pytest.raises(RuntimeError):
+        run()
+    call_kwargs = run_env["send_crash_alert"].call_args[1]
+    assert call_kwargs["gmail_sender"] == "sender@gmail.com"
+    assert call_kwargs["gmail_password"] == "app-password"
+
+
+# ---------------------------------------------------------------------------
+# run() — alerting: failure summary
+# ---------------------------------------------------------------------------
+
+
+def test_run_with_one_failure_calls_send_failure_summary(run_env) -> None:
+    """When any emails fail, send_failure_summary is called after the loop."""
+    emails = [make_email("msg_001"), make_email("msg_002"), make_email("msg_003")]
+    run_env["fetch_emails"].return_value = emails
+    run_env["process_email"].side_effect = [
+        ProcessingResult(
+            gmail_message_id="msg_001",
+            status="failed_trello_create",
+            error_message="Trello API down",
+        ),
+        success_result("msg_002"),
+        success_result("msg_003"),
+    ]
+    run()
+    run_env["send_failure_summary"].assert_called_once()
+    call_kwargs = run_env["send_failure_summary"].call_args[1]
+    assert call_kwargs["agent_name"] == "Gmail-to-Trello"
+    assert call_kwargs["failed"] == 1
+    assert call_kwargs["processed"] == 2
+
+
+def test_run_with_zero_failures_does_not_call_send_failure_summary(run_env) -> None:
+    """When all emails succeed, send_failure_summary is not called."""
+    emails = [make_email("msg_001"), make_email("msg_002")]
+    run_env["fetch_emails"].return_value = emails
+    run_env["process_email"].return_value = success_result()
+    run()
+    run_env["send_failure_summary"].assert_not_called()
+
+
+def test_run_failure_summary_includes_error_messages(run_env) -> None:
+    """Error messages from failed results are passed to send_failure_summary."""
+    emails = [make_email("msg_001")]
+    run_env["fetch_emails"].return_value = emails
+    run_env["process_email"].return_value = ProcessingResult(
+        gmail_message_id="msg_001",
+        status="failed_trello_create",
+        error_message="Rate limit exceeded",
+    )
+    run()
+    call_kwargs = run_env["send_failure_summary"].call_args[1]
+    assert "Rate limit exceeded" in call_kwargs["errors"]
+
+
+# ---------------------------------------------------------------------------
+# run() — alerting: startup failures send crash alert before exit
+# ---------------------------------------------------------------------------
+
+
+def test_run_imap_auth_failure_sends_crash_alert(run_env) -> None:
+    """IMAP auth failure triggers send_crash_alert before sys.exit(1)."""
+    run_env["check_imap_auth"].side_effect = imaplib.IMAP4.error("Invalid credentials")
+    with pytest.raises(SystemExit):
+        run()
+    run_env["send_crash_alert"].assert_called_once()
+    call_kwargs = run_env["send_crash_alert"].call_args[1]
+    assert call_kwargs["agent_name"] == "Gmail-to-Trello"
+
+
+def test_run_trello_validation_failure_sends_crash_alert(run_env) -> None:
+    """Trello list validation failure triggers send_crash_alert before sys.exit(1)."""
+    run_env["validate_list"].side_effect = TrelloError("Connection refused")
+    with pytest.raises(SystemExit):
+        run()
+    run_env["send_crash_alert"].assert_called_once()
+    call_kwargs = run_env["send_crash_alert"].call_args[1]
+    assert call_kwargs["agent_name"] == "Gmail-to-Trello"
+
+
+def test_run_trello_list_not_found_sends_crash_alert(run_env) -> None:
+    """Trello list not found on board triggers send_crash_alert before sys.exit(1)."""
+    run_env["validate_list"].return_value = False
+    with pytest.raises(SystemExit):
+        run()
+    run_env["send_crash_alert"].assert_called_once()
+    call_kwargs = run_env["send_crash_alert"].call_args[1]
+    assert call_kwargs["agent_name"] == "Gmail-to-Trello"
+
+
+# ---------------------------------------------------------------------------
+# run() — alerting: alert delivery failure is non-fatal
+# ---------------------------------------------------------------------------
+
+
+def test_run_crash_alert_failure_does_not_cause_secondary_crash(run_env) -> None:
+    """If send_crash_alert itself raises, the original exception is still re-raised cleanly."""
+    run_env["init_db"].side_effect = RuntimeError("DB exploded")
+    run_env["send_crash_alert"].side_effect = Exception("SMTP failure")
+    # Should raise the original RuntimeError, not the SMTP failure
+    with pytest.raises(RuntimeError, match="DB exploded"):
+        run()
+
+
+def test_run_startup_crash_alert_failure_still_exits(run_env) -> None:
+    """If send_crash_alert raises during a startup failure, sys.exit(1) is still called."""
+    run_env["check_imap_auth"].side_effect = imaplib.IMAP4.error("Invalid credentials")
+    run_env["send_crash_alert"].side_effect = Exception("SMTP failure")
+    with pytest.raises(SystemExit) as exc_info:
+        run()
+    assert exc_info.value.code == 1
+
+
+# ---------------------------------------------------------------------------
+# _retry_startup_check — unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_retry_startup_check_succeeds_on_first_attempt() -> None:
+    calls = []
+
+    def fn():
+        calls.append(1)
+        return "ok"
+
+    with patch("src.orchestrator.time.sleep") as mock_sleep:
+        result = _retry_startup_check(fn, max_attempts=3, backoff_seconds=5,
+                                       retryable_exceptions=(OSError,), label="test")
+    assert result == "ok"
+    assert len(calls) == 1
+    mock_sleep.assert_not_called()
+
+
+def test_retry_startup_check_retries_on_retryable_exception() -> None:
+    attempt = [0]
+
+    def fn():
+        attempt[0] += 1
+        if attempt[0] < 3:
+            raise OSError("DNS failure")
+        return "ok"
+
+    with patch("src.orchestrator.time.sleep"):
+        result = _retry_startup_check(fn, max_attempts=3, backoff_seconds=5,
+                                       retryable_exceptions=(OSError,), label="test")
+    assert result == "ok"
+    assert attempt[0] == 3
+
+
+def test_retry_startup_check_sleeps_between_attempts() -> None:
+    attempt = [0]
+
+    def fn():
+        attempt[0] += 1
+        if attempt[0] < 3:
+            raise OSError("DNS failure")
+        return "ok"
+
+    with patch("src.orchestrator.time.sleep") as mock_sleep:
+        _retry_startup_check(fn, max_attempts=3, backoff_seconds=30,
+                              retryable_exceptions=(OSError,), label="test")
+    assert mock_sleep.call_count == 2
+    mock_sleep.assert_called_with(30)
+
+
+def test_retry_startup_check_raises_after_all_attempts_exhausted() -> None:
+    def fn():
+        raise OSError("DNS failure")
+
+    with patch("src.orchestrator.time.sleep"):
+        with pytest.raises(OSError, match="DNS failure"):
+            _retry_startup_check(fn, max_attempts=3, backoff_seconds=5,
+                                  retryable_exceptions=(OSError,), label="test")
+
+
+def test_retry_startup_check_non_retryable_propagates_immediately() -> None:
+    attempt = [0]
+
+    def fn():
+        attempt[0] += 1
+        raise ValueError("permanent error")
+
+    with patch("src.orchestrator.time.sleep") as mock_sleep:
+        with pytest.raises(ValueError, match="permanent error"):
+            _retry_startup_check(fn, max_attempts=3, backoff_seconds=5,
+                                  retryable_exceptions=(OSError,), label="test")
+    assert attempt[0] == 1
+    mock_sleep.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# run() — retry behavior for transient startup errors
+# ---------------------------------------------------------------------------
+
+
+def test_run_trello_transient_error_retries_and_succeeds(run_env) -> None:
+    """First validate_list call raises TrelloError, second succeeds — run proceeds normally."""
+    run_env["validate_list"].side_effect = [TrelloError("DNS failure"), True]
+    run()  # should not raise
+    assert run_env["validate_list"].call_count == 2
+    run_env["sleep"].assert_called_once()
+
+
+def test_run_trello_exhausts_retries_sends_single_crash_alert_and_exits(run_env) -> None:
+    """All validate_list attempts fail — exactly one crash alert sent then sys.exit(1)."""
+    run_env["validate_list"].side_effect = TrelloError("DNS failure")
+    with pytest.raises(SystemExit) as exc_info:
+        run()
+    assert exc_info.value.code == 1
+    assert run_env["validate_list"].call_count == 3
+    run_env["send_crash_alert"].assert_called_once()
+
+
+def test_run_imap_transient_network_error_retries_and_succeeds(run_env) -> None:
+    """First check_imap_auth raises OSError, second succeeds — run proceeds normally."""
+    run_env["check_imap_auth"].side_effect = [OSError("getaddrinfo failed"), None]
+    run()  # should not raise
+    assert run_env["check_imap_auth"].call_count == 2
+    run_env["sleep"].assert_called_once()
+
+
+def test_run_imap_bad_credentials_exits_immediately_without_retry(run_env) -> None:
+    """imaplib.IMAP4.error (bad credentials) is not retried — exits on first attempt."""
+    run_env["check_imap_auth"].side_effect = imaplib.IMAP4.error("Invalid credentials")
+    with pytest.raises(SystemExit) as exc_info:
+        run()
+    assert exc_info.value.code == 1
+    assert run_env["check_imap_auth"].call_count == 1
+    run_env["sleep"].assert_not_called()

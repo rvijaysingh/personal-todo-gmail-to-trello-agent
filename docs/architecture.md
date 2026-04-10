@@ -13,15 +13,16 @@ schedule via Windows Task Scheduler.
 ## Pipeline Diagram
 
 ```
-  Gmail API
+  Gmail IMAP (imap.gmail.com:993)
   (starred, not yet labeled "Agent/Added-To-Trello", oldest first)
        |
        v
   gmail_client.fetch_starred_emails()
-  - OAuth2 auth (token auto-refresh)
-  - Query: is:starred -label:Agent/Added-To-Trello [newer_than:Nd]
+  - IMAP auth (app password, never expires)
+  - Search: FLAGGED NOT X-GM-LABELS "Agent/Added-To-Trello" [SINCE date]
+  - RFC822 fetch + email.message_from_bytes() parsing
   - MIME body extraction (plain text preferred; HTML fallback)
-  - Sorted by internalDate ascending
+  - Sorted by email Date header ascending
        |
        v
   orchestrator: dedup check (SQLite)
@@ -55,6 +56,13 @@ schedule via Windows Task Scheduler.
   db.insert_record()
   - SQLite: emails_processed table
   - Captures status, card URL, card name source, timestamps
+       |
+       v
+  alert_notifier (agent_shared.alerts.notifier) — best-effort, non-blocking
+  - On any unhandled exception: send_crash_alert (traceback included)
+  - On run with failures (failed > 0): send_failure_summary (counts + errors)
+  - On startup failure after config load: send_crash_alert before sys.exit(1)
+  - All alert calls wrapped in try/except; SMTP failures are logged only
 ```
 
 ---
@@ -65,8 +73,11 @@ schedule via Windows Task Scheduler.
 (load config, init DB, log LLM provider availability, health-check Ollama,
 validate Trello list, detect first/subsequent run) and the per-email
 processing loop. Delegates every domain concern to a dedicated module.
-Collects run statistics and logs a summary on completion. No external API
-calls of its own.
+Collects run statistics and logs a summary on completion. Startup network
+checks (Trello list validation and IMAP auth) are wrapped in
+`_retry_startup_check()` — up to 3 attempts with 30s backoff — so transient
+DNS failures (common on Windows after boot) self-heal instead of crashing
+the run. No external API calls of its own.
 
 **`agent_shared.infra.config_loader`** — Loads and validates the two-tier
 configuration: a global `.env.json` (secrets, shared across agents) and a
@@ -76,14 +87,14 @@ mid-run. Resolves the global config path from the `ENV_CONFIG_PATH`
 environment variable with a sensible repo-local default. Exposes
 `GlobalConfig` and `AgentConfig` dataclasses.
 
-**`src/gmail_client.py`** — Wraps the Google API Python client for Gmail.
-Handles OAuth2 token refresh automatically; provides a `--reauth` CLI flag
-for when the token has expired. Fetches starred messages (excluding those
-already labeled as processed), extracts the body from nested MIME parts
-(prefers `text/plain`; strips HTML tags as fallback), and applies the
-processed label. Stars are intentionally not removed. All operations use
-the `gmail.modify` scope. Depends on: `google-api-python-client`,
-`google-auth-oauthlib`.
+**`src/gmail_client.py`** — Gmail access via IMAP with an app password
+(`imap.gmail.com:993`). `check_imap_auth` verifies credentials at startup.
+`fetch_starred_emails` uses Gmail's `X-GM-LABELS` IMAP extension to exclude
+already-processed messages at the server level, fetches RFC822 and parses
+with Python's `email` stdlib, extracts the body (prefers `text/plain`; strips
+HTML tags as fallback). `apply_label` uses `X-GM-MSGID` to find the message
+in `[Gmail]/All Mail` and applies the label via `+X-GM-LABELS`. Stars are
+intentionally not removed. Depends on: stdlib only (`imaplib`, `email`).
 
 **`agent_shared.trello.client`** — Thin wrapper over the Trello REST API
 using `requests`. Exposes `validate_list` (startup sanity check) and
@@ -113,6 +124,15 @@ stdlib. Creates the `emails_processed` table on first run. Provides
 `get_last_run_time` (returns `None` on an empty table, signalling first run).
 Depends on: stdlib only.
 
+**`agent_shared.alerts.notifier`** — Shared alerting module used across
+agents. `send_crash_alert` sends an email with the exception and traceback
+when an unhandled error occurs. `send_failure_summary` sends a summary when
+one or more emails fail processing. Both use Gmail SMTP (same credentials as
+IMAP). Triggered by three events: (1) any unhandled exception after config is
+loaded, (2) failed > 0 at end of processing loop, (3) startup failure after
+config load (IMAP auth failure, Trello list not found). All calls are wrapped
+in try/except — alert delivery failure is non-fatal.
+
 **`src/models.py`** — Shared dataclasses: `EmailRecord` (raw email fields),
 `CardPayload` (name + description + source), `ProcessingResult` (outcome,
 card IDs, error). No logic; imported by all other modules.
@@ -122,10 +142,11 @@ card IDs, error). No logic; imported by all other modules.
 ## Data Flow
 
 1. **Fetch** — `gmail_client.fetch_starred_emails()` returns a list of
-   `EmailRecord` objects sorted oldest-first. The Gmail query is
-   `is:starred -label:Agent/Added-To-Trello [newer_than:Nd]`, ensuring
-   already-processed emails are excluded at the API level. Each record
-   holds the Gmail message ID, subject, sender, date, and decoded body.
+   `EmailRecord` objects sorted oldest-first. The IMAP search is
+   `FLAGGED NOT X-GM-LABELS "Agent/Added-To-Trello" [SINCE date]`, ensuring
+   already-processed emails are excluded at the server level. Each record
+   holds the X-GM-MSGID (as `gmail_message_id`), subject, sender, date,
+   and decoded body.
 
 2. **Name generation** — `card_builder.generate_card_name(email, llm_fn,
    template)` receives the `EmailRecord` and an `LlmClientFn` callable
@@ -158,20 +179,24 @@ card IDs, error). No logic; imported by all other modules.
 
 ## Key Design Decisions
 
-### OAuth2 over IMAP for Gmail access
+### IMAP with app password for Gmail access
 
 **Context:** The agent needs to read emails and apply Gmail labels.
-IMAP could read and flag messages but cannot apply Gmail labels (a
-Gmail-specific concept). Managing OAuth2 credentials adds setup friction.
+OAuth2 was originally used but Google's token refresh policy requires manual
+browser re-consent every 7 days for unverified apps with restricted scopes —
+making headless scheduling impractical.
 
-**Options considered:** IMAP with App Passwords; Gmail REST API with OAuth2.
+**Options considered:** Gmail REST API with OAuth2; IMAP with app password.
 
-**Chosen:** Gmail REST API with OAuth2 via `google-api-python-client`.
+**Chosen:** IMAP with a Gmail app password (`imap.gmail.com:993`). Gmail's
+X-GM-LABELS and X-GM-MSGID IMAP extensions handle label operations.
 
-**Tradeoffs:** OAuth2 provides full access to Gmail labels (required for the
-processed-label feature) and aligns with Google's recommended approach.
-Sacrifices: initial setup requires a Google Cloud project and an OAuth
-consent flow. Revisit if Google deprecates the current credential model.
+**Tradeoffs:** App passwords never expire (until manually revoked or 2FA
+disabled), enabling fully headless operation. No Google Cloud project or
+OAuth consent screen required — just a one-time app password setup. Sacrifices:
+app passwords require 2FA to be enabled on the Google account. The IMAP
+X-GM-LABELS extension is Gmail-specific (not standard IMAP). Revisit if Google
+deprecates IMAP or the X-GM extensions.
 
 ---
 

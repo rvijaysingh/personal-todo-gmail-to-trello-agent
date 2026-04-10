@@ -31,9 +31,13 @@ Windows Task Scheduler.
 - LLM (fallback): Ollama running locally at http://localhost:11434
   (model name specified in global config, currently qwen3:8b).
   Used if Anthropic API is unavailable or not configured.
-- Gmail: Google API Python client with OAuth2 for reading emails
-  and applying labels. NOT IMAP.
+- Gmail: IMAP with app password (imap.gmail.com:993) for reading
+  starred emails and applying labels. Uses Gmail's X-GM-LABELS and
+  X-GM-MSGID IMAP extensions.
 - Trello: REST API (key + token auth) for card creation.
+- Alerting: agent_shared.alerts.notifier for email notifications on crashes
+  and failures. Uses Gmail SMTP (same credentials as IMAP). Alert delivery
+  failure never crashes the agent — errors are logged only.
 - No browser automation. All interactions are API-based.
 
 ## Documentation Structure
@@ -69,7 +73,7 @@ gmail-to-trello-agent/
     card_name.md               # LLM prompt for generating actionable task name
   src/
     __init__.py
-    gmail_client.py            # Gmail API: fetch starred, apply label
+    gmail_client.py            # Gmail IMAP: fetch starred, apply label
     card_builder.py            # Builds card name (LLM or fallback) and description
     orchestrator.py            # Main entry point and pipeline coordinator
     models.py                  # Shared data structures (EmailRecord,
@@ -110,8 +114,8 @@ Two config sources plus LLM prompts:
    - trello.personal_todo_board_id (the Todo board: oNIV6Mcq)
    - ollama_endpoint (default: http://localhost:11434)
    - ollama_model (default: qwen3:8b)
-   - gmail_oauth.gmail_oauth_credentials_path (path to credentials.json)
-   - gmail_oauth.gmail_oauth_token_path (path to token.json)
+   - gmail_sender (Gmail address, e.g. you@gmail.com)
+   - gmail_password (Gmail app password from Google Account → Security)
    - anthropic_api_keys.gmail-to-trello (optional — Anthropic API key
      for this agent; omit to use Ollama-only mode)
 
@@ -136,9 +140,9 @@ Two config sources plus LLM prompts:
 ## Business Rules
 
 ### Run Logic
-1. On each run, query Gmail for starred emails that do NOT carry the
-   processed label ("is:starred -label:Agent/Added-To-Trello"). The
-   label exclusion is always applied to prevent reprocessing.
+1. On each run, query Gmail via IMAP for starred (FLAGGED) emails that
+   do NOT carry the processed label (NOT X-GM-LABELS "Agent/Added-To-Trello").
+   The label exclusion is always applied at the IMAP server level to prevent reprocessing.
 2. If this is the first run (no records in emails_processed.db),
    limit to starred emails received within the last
    first_run_lookback_days (default 7). This avoids processing
@@ -156,12 +160,11 @@ Two config sources plus LLM prompts:
 For each starred email, in sequence (one at a time for crash safety):
 
 Step 1 - Extract Email Data:
-- Fetch full message via Gmail API.
-- Extract: message ID, subject, sender (name + email), date,
-  body (prefer plain text part; if unavailable, strip HTML tags
+- Fetch full message via IMAP (RFC822 + X-GM-MSGID).
+- Extract: X-GM-MSGID (as message ID), subject, sender (From header),
+  date, body (prefer plain text part; if unavailable, strip HTML tags
   from HTML part).
-- If the email is a thread, extract only the most recent message
-  body, not the full thread history.
+- Parse with Python's email.message_from_bytes().
 
 Step 2 - Generate Card Name (three-tier fallback):
 - Try Anthropic API first (Haiku 4.5): send subject + first 500
@@ -233,6 +236,23 @@ Step 7 - Record to Database:
 - If the Trello card was created but the label application failed,
   the dedup check on the next run prevents a duplicate card.
 
+### Alerting
+Alerting uses agent_shared.alerts.notifier (Gmail SMTP, same credentials as
+IMAP). Alert delivery failure never crashes or blocks the agent.
+
+- On unhandled crash: sends a crash alert email with the exception and full
+  traceback. The original exception is still re-raised so the process exits
+  non-zero. Triggered by any unhandled exception after config is loaded.
+- On run with failures: sends a failure summary email with processed/failed
+  counts and the error messages from each failed email. Only sent if
+  failed > 0. Sent after the processing loop completes.
+- On startup failure (after config loaded): sends a crash alert before
+  calling sys.exit(1). Covers IMAP authentication failure and Trello list
+  validation failure (both TrelloError and list-not-found cases).
+- Alert delivery failure is non-fatal: each send_crash_alert and
+  send_failure_summary call is wrapped in try/except; failures are logged
+  at ERROR level and the agent continues its normal exit path.
+
 
 ## Database Schema
 
@@ -275,24 +295,21 @@ CREATE TABLE IF NOT EXISTS emails_processed (
 These are cross-cutting risks that should influence how every module
 is built. Claude Code should build defensively against these.
 
-### Gmail OAuth Token Expiry (Likelihood: Medium)
-The OAuth2 refresh token may expire or be revoked (e.g., password
-change, security event, 6-month inactivity on the token).
-- Mitigation: The gmail_client must handle token refresh
-  automatically via the google-auth library's built-in flow.
-- Mitigation: If refresh fails, log the specific error and exit
-  with a clear message: "Gmail OAuth token expired, manual
-  re-authentication required. Run: python src/gmail_client.py
-  --reauth"
-- Mitigation: Provide a --reauth CLI flag on gmail_client.py
-  that triggers the full OAuth consent flow.
+### Gmail App Password Revoked (Likelihood: Very Low)
+The Gmail app password could be manually revoked, or 2FA disabled
+on the Google account, invalidating the app password.
+- Mitigation: Startup IMAP auth check (check_imap_auth) connects
+  and immediately disconnects, catching this before any processing.
+- Mitigation: On failure, log: "IMAP authentication failed — check
+  gmail_sender and gmail_password in .env.json" and exit with code 1.
+- Fix: generate a new app password in Google Account → Security →
+  App passwords, and update .env.json.
 
-### Gmail API Rate Limits (Likelihood: Low)
-Gmail API quota is generous (250 units/second for read operations)
-but batch processing many starred emails could hit limits.
+### Gmail IMAP Rate Limits (Likelihood: Low)
+High-frequency IMAP connections or large batch fetches could hit
+server-side limits.
 - Mitigation: Configurable processing_delay_seconds between emails.
-- Mitigation: On 429 responses, implement exponential backoff with
-  a maximum of 3 retries before recording the email as failed.
+- Mitigation: Failed emails retain their star and are retried next run.
 
 ### Anthropic API Unavailable (Likelihood: Low)
 The Anthropic API could be unreachable, rate-limited, or the API
@@ -346,6 +363,16 @@ take a long time and hit API limits.
 - Mitigation: first_run_lookback_days limits the scope.
 - Mitigation: Log progress every 10 emails ("Processed 10/85...")
   so the user can monitor.
+
+### Alert Delivery Failure (Likelihood: Very Low)
+The SMTP call inside send_crash_alert or send_failure_summary could fail
+(network issue, Gmail SMTP rate limit, or invalid credentials).
+- Mitigation: agent_shared.alerts.notifier catches all SMTP errors
+  internally and logs them. The orchestrator additionally wraps every
+  alert call in try/except so a failing alert never propagates.
+- Mitigation: The agent continues its normal exit path regardless (either
+  re-raising the original exception or calling sys.exit(1)). Alerts are
+  best-effort, not critical path.
 
 ## Future Scope (Do NOT Build Now)
 The following are out of scope for the current build. Do not build

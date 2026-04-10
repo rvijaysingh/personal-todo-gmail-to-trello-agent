@@ -10,7 +10,7 @@ Global .env.json                    Agent config
 (gitignored, machine-local)         (config/agent_config.json, gitignored)
          |                                      |
          |-- trello API key/token               |-- which Trello list to use
-         |-- Gmail OAuth paths                  |-- first-run lookback window
+         |-- Gmail IMAP credentials             |-- first-run lookback window
          |-- Ollama host/model                  |-- rate-limit delay
                                                 |-- log and DB paths
 ```
@@ -30,8 +30,8 @@ repo.
 Gitignored; never committed. See `config/.env.json.example` for the
 full template with placeholder values.
 
-The file uses a mixed structure — `trello` and `gmail_oauth` are nested objects,
-while Ollama settings are top-level keys:
+The file uses a mixed structure — `trello` is a nested object, while Gmail
+credentials and Ollama settings are top-level keys:
 
 ```json
 {
@@ -42,10 +42,8 @@ while Ollama settings are top-level keys:
   },
   "ollama_endpoint": "http://localhost:11434",
   "ollama_model": "qwen3:8b",
-  "gmail_oauth": {
-    "gmail_oauth_credentials_path": "<absolute-path-to-credentials.json>",
-    "gmail_oauth_token_path":       "<absolute-path-to-token.json>"
-  },
+  "gmail_sender": "<your-gmail-address@gmail.com>",
+  "gmail_password": "<your-gmail-app-password>",
   "anthropic_api_keys": {
     "gmail-to-trello": "<your-anthropic-api-key-or-omit-for-ollama-only>"
   }
@@ -59,8 +57,8 @@ while Ollama settings are top-level keys:
 | `trello.personal_todo_board_id` | string | ID of the Trello board containing the target list (visible in board URL) | `"oNIV6Mcq"` |
 | `ollama_endpoint` | string | Base URL of the local Ollama server | `"http://localhost:11434"` |
 | `ollama_model` | string | Model name to use for card name generation | `"qwen3:8b"` |
-| `gmail_oauth.gmail_oauth_credentials_path` | string | Absolute path to `credentials.json` downloaded from Google Cloud Console | `"C:/secrets/credentials.json"` |
-| `gmail_oauth.gmail_oauth_token_path` | string | Absolute path where the OAuth2 token file will be stored after first auth | `"C:/secrets/token.json"` |
+| `gmail_sender` | string | Gmail address used to authenticate IMAP | `"you@gmail.com"` |
+| `gmail_password` | string | Gmail app password (Google Account → Security → App passwords). NOT your regular Gmail password. | `"abcd efgh ijkl mnop"` |
 | `anthropic_api_keys.gmail-to-trello` | string | *(optional)* Anthropic API key used by this agent for card name generation. When present, Anthropic Haiku 4.5 is used as the primary LLM; Ollama is the fallback. Omit the key entirely to use Ollama-only mode. | `"sk-ant-..."` |
 
 All required fields are validated at startup. The agent exits with a message

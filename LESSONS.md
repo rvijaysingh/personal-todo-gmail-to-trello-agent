@@ -37,6 +37,39 @@ re-authentication triggers here.)*
 
 ---
 
+## Transient Network Failures at Startup (2026-03)
+
+### What happened
+Three scheduled runs failed with DNS resolution errors shortly after the machine started:
+- `socket.gaierror: [Errno 11004] getaddrinfo failed` — IMAP `imap.gmail.com:993`
+- `NameResolutionError: Failed to resolve 'api.trello.com'` — Trello list validation
+
+The agent was exiting immediately on the first failure and sending a crash alert email.
+The network became available seconds later, but the run was already dead.
+
+### Root cause
+Windows Task Scheduler fires the agent before the network stack is fully ready
+(common after boot or wake-from-sleep on Windows 10/11).
+
+### Fix applied
+`orchestrator._retry_startup_check()` retries both startup network checks up to
+3 times with a 30-second backoff before giving up:
+- Trello list validation: retries any `TrelloError` (connection errors)
+- IMAP auth check: retries `OSError`, `socket.timeout`, `ConnectionRefusedError`
+- `imaplib.IMAP4.error` (bad credentials) is **not** retried — exits immediately
+
+### Constants
+`_STARTUP_MAX_ATTEMPTS = 3`, `_STARTUP_BACKOFF_SECONDS = 30` in `orchestrator.py`.
+Total worst-case wait before giving up: ~60 seconds (2 sleeps of 30s).
+
+### Distinguishing transient vs. permanent IMAP errors
+- `imaplib.IMAP4.error` = bad credentials = permanent → no retry
+- `OSError` (superclass of `socket.gaierror`) = DNS/network failure = transient → retry
+- `socket.timeout` = server unreachable/slow = transient → retry
+- `ConnectionRefusedError` = port closed = transient → retry
+
+---
+
 ## Migration to agent_shared (2026-03)
 
 ### What moved to agent_shared
