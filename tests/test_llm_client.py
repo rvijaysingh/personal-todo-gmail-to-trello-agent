@@ -122,7 +122,7 @@ def test_health_check_strips_trailing_slash_from_host() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_anthropic_generate_card_name_success_returns_name_and_source() -> None:
+def test_anthropic_generate_card_name_success_returns_text_and_source() -> None:
     with patch("agent_shared.llm.client.anthropic_sdk.Anthropic") as mock_cls:
         mock_cls.return_value = _make_anthropic_client_mock("Review quarterly board deck")
         result = _anthropic_generate_card_name(
@@ -132,12 +132,15 @@ def test_anthropic_generate_card_name_success_returns_name_and_source() -> None:
             api_key=FAKE_ANTHROPIC_KEY,
         )
     assert result is not None
-    name, source = result
-    assert name == "Review quarterly board deck"
+    text, source = result
+    assert text == "Review quarterly board deck"
     assert source == "anthropic"
 
 
-def test_anthropic_generate_card_name_truncates_to_100_chars() -> None:
+def test_anthropic_generate_card_name_returns_full_cleaned_text() -> None:
+    """agent_shared no longer truncates — it returns the full cleaned LLM response.
+    Truncation of the card_name field is the caller's (card_builder's) responsibility.
+    """
     long_text = "A" * 200
     with patch("agent_shared.llm.client.anthropic_sdk.Anthropic") as mock_cls:
         mock_cls.return_value = _make_anthropic_client_mock(long_text)
@@ -148,8 +151,8 @@ def test_anthropic_generate_card_name_truncates_to_100_chars() -> None:
             api_key=FAKE_ANTHROPIC_KEY,
         )
     assert result is not None
-    name, _ = result
-    assert len(name) <= 100
+    text, _ = result
+    assert len(text) == 200
 
 
 def test_anthropic_generate_card_name_uses_correct_model() -> None:
@@ -207,9 +210,9 @@ def test_anthropic_generate_card_name_strips_think_tags() -> None:
             api_key=FAKE_ANTHROPIC_KEY,
         )
     assert result is not None
-    name, _ = result
-    assert "<think>" not in name
-    assert "Review the document" in name
+    text, _ = result
+    assert "<think>" not in text
+    assert "Review the document" in text
 
 
 # ---------------------------------------------------------------------------
@@ -314,8 +317,8 @@ def test_generate_card_name_ollama_success_returns_ollama_source() -> None:
             config=SAMPLE_CONFIG,
         )
     assert result is not None
-    name, source = result
-    assert name == "Review quarterly board deck"
+    text, source = result
+    assert text == "Review quarterly board deck"
     assert source == "ollama"
 
 
@@ -330,9 +333,9 @@ def test_generate_card_name_strips_think_tags() -> None:
             config=SAMPLE_CONFIG,
         )
     assert result is not None
-    name, _ = result
-    assert "<think>" not in name
-    assert "Review Q3 board deck" in name
+    text, _ = result
+    assert "<think>" not in text
+    assert "Review Q3 board deck" in text
 
 
 def test_generate_card_name_strips_code_fences() -> None:
@@ -346,12 +349,15 @@ def test_generate_card_name_strips_code_fences() -> None:
             config=SAMPLE_CONFIG,
         )
     assert result is not None
-    name, _ = result
-    assert "```" not in name
-    assert "Follow up on invoice payment" in name
+    text, _ = result
+    assert "```" not in text
+    assert "Follow up on invoice payment" in text
 
 
-def test_generate_card_name_truncates_to_100_chars() -> None:
+def test_generate_card_name_returns_full_cleaned_text() -> None:
+    """agent_shared no longer truncates — it returns the full cleaned Ollama response.
+    Truncation of the card_name field is the caller's (card_builder's) responsibility.
+    """
     long_response = "A" * 200
     mock_resp = _make_urlopen_mock({"response": long_response})
     with patch("urllib.request.urlopen", return_value=mock_resp):
@@ -362,23 +368,8 @@ def test_generate_card_name_truncates_to_100_chars() -> None:
             config=SAMPLE_CONFIG,
         )
     assert result is not None
-    name, _ = result
-    assert len(name) <= 100
-
-
-def test_generate_card_name_name_exactly_100_chars_not_truncated() -> None:
-    exact_name = "B" * 100
-    mock_resp = _make_urlopen_mock({"response": exact_name})
-    with patch("urllib.request.urlopen", return_value=mock_resp):
-        result = generate_card_name(
-            subject="Exact",
-            body_excerpt="body",
-            prompt_template=CARD_NAME_TEMPLATE,
-            config=SAMPLE_CONFIG,
-        )
-    assert result is not None
-    name, _ = result
-    assert len(name) == 100
+    text, _ = result
+    assert len(text) == 200
 
 
 def test_generate_card_name_substitutes_template_placeholders() -> None:
@@ -487,7 +478,7 @@ def test_generate_card_name_think_tags_only_response_returns_none() -> None:
 def test_generate_card_name_anthropic_key_uses_anthropic_first() -> None:
     """With an API key configured, Anthropic should be tried first."""
     with patch("agent_shared.llm.client._anthropic_generate_card_name") as mock_anthropic:
-        mock_anthropic.return_value = ("Anthropic name", "anthropic")
+        mock_anthropic.return_value = ("Anthropic raw text", "anthropic")
         result = generate_card_name(
             subject="Test",
             body_excerpt="body",
@@ -496,7 +487,7 @@ def test_generate_card_name_anthropic_key_uses_anthropic_first() -> None:
             anthropic_api_key=FAKE_ANTHROPIC_KEY,
         )
     mock_anthropic.assert_called_once()
-    assert result == ("Anthropic name", "anthropic")
+    assert result == ("Anthropic raw text", "anthropic")
 
 
 def test_generate_card_name_no_anthropic_key_skips_anthropic() -> None:
@@ -516,7 +507,7 @@ def test_generate_card_name_no_anthropic_key_skips_anthropic() -> None:
 
 def test_generate_card_name_anthropic_fails_falls_back_to_ollama() -> None:
     """If Anthropic returns None, Ollama is tried next."""
-    mock_resp = _make_urlopen_mock({"response": "Ollama name"})
+    mock_resp = _make_urlopen_mock({"response": "Ollama raw text"})
     with patch("agent_shared.llm.client._anthropic_generate_card_name", return_value=None):
         with patch("urllib.request.urlopen", return_value=mock_resp):
             result = generate_card_name(
@@ -527,8 +518,8 @@ def test_generate_card_name_anthropic_fails_falls_back_to_ollama() -> None:
                 anthropic_api_key=FAKE_ANTHROPIC_KEY,
             )
     assert result is not None
-    name, source = result
-    assert name == "Ollama name"
+    text, source = result
+    assert text == "Ollama raw text"
     assert source == "ollama"
 
 
@@ -542,7 +533,7 @@ def test_generate_card_name_anthropic_rate_limited_falls_back_to_ollama() -> Non
                 body={},
             )
         )
-        mock_resp = _make_urlopen_mock({"response": "Ollama fallback"})
+        mock_resp = _make_urlopen_mock({"response": "Ollama fallback text"})
         with patch("urllib.request.urlopen", return_value=mock_resp):
             result = generate_card_name(
                 subject="Test",
@@ -552,8 +543,8 @@ def test_generate_card_name_anthropic_rate_limited_falls_back_to_ollama() -> Non
                 anthropic_api_key=FAKE_ANTHROPIC_KEY,
             )
     assert result is not None
-    name, source = result
-    assert name == "Ollama fallback"
+    text, source = result
+    assert text == "Ollama fallback text"
     assert source == "ollama"
 
 

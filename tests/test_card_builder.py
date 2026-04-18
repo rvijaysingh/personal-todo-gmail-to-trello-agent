@@ -1,10 +1,14 @@
 """Tests for src/card_builder.py."""
 
+import json
+
 import pytest
 
 from src.card_builder import (
     _clean_subject,
     _format_date,
+    _format_email_date_for_prompt,
+    _validate_and_format_due_date,
     build_card_description,
     generate_card_name,
 )
@@ -14,7 +18,9 @@ from src.models import EmailRecord
 # Helpers
 # ---------------------------------------------------------------------------
 
-PROMPT_TEMPLATE = "Subject: {{subject}}\nBody: {{body_preview}}\nTask name:"
+PROMPT_TEMPLATE = (
+    "Date: {{email_date}}\nSubject: {{subject}}\nBody: {{body_preview}}\nJSON:"
+)
 
 
 def make_email(
@@ -33,14 +39,24 @@ def make_email(
     )
 
 
-def llm_ok(name: str = "Review the document") -> callable:
-    """Return an llm_client callable that always succeeds."""
-    return lambda subject, body, template: (name, "llm")
+def llm_ok(
+    name: str = "Review the document",
+    due_date: str | None = None,
+    source: str = "llm",
+) -> callable:
+    """Return an llm_client callable that returns a JSON string."""
+    json_text = json.dumps({"card_name": name, "due_date": due_date})
+    return lambda subject, body, template: (json_text, source)
 
 
 def llm_down() -> callable:
-    """Return an llm_client callable that always returns None (Ollama down)."""
+    """Return an llm_client callable that always returns None (LLM unavailable)."""
     return lambda subject, body, template: None
+
+
+def llm_raw(raw_text: str, source: str = "llm") -> callable:
+    """Return an llm_client callable that returns the given raw text string."""
+    return lambda subject, body, template: (raw_text, source)
 
 
 # ---------------------------------------------------------------------------
@@ -97,13 +113,11 @@ def test_clean_subject_no_prefix_unchanged() -> None:
 
 
 def test_clean_subject_empty_result_falls_back_to_original() -> None:
-    # A subject that is only a prefix (after stripping, result is empty)
     result = _clean_subject("Re:")
     assert result != ""
 
 
 def test_clean_subject_preserves_re_within_subject() -> None:
-    # "Re:" at the start should be stripped, but "re" elsewhere should not
     assert _clean_subject("Re: Renewal reminder") == "Renewal reminder"
 
 
@@ -121,7 +135,6 @@ def test_format_date_iso_no_tz() -> None:
 
 
 def test_format_date_day_without_leading_zero() -> None:
-    # Day should be 1, not 01
     result = _format_date("2026-03-01T00:00:00")
     assert "March 1, 2026" == result
 
@@ -136,30 +149,136 @@ def test_format_date_empty_string_returns_empty() -> None:
 
 
 # ---------------------------------------------------------------------------
-# generate_card_name — LLM success
+# _format_email_date_for_prompt unit tests
 # ---------------------------------------------------------------------------
 
 
-def test_generate_card_name_returns_llm_name_when_available() -> None:
+def test_format_email_date_for_prompt_includes_day_of_week() -> None:
+    result = _format_email_date_for_prompt("2026-03-08T10:00:00+00:00")
+    assert "Sunday" in result  # 2026-03-08 is a Sunday
+
+
+def test_format_email_date_for_prompt_includes_month_and_year() -> None:
+    result = _format_email_date_for_prompt("2026-04-09T10:00:00+00:00")
+    assert "April" in result
+    assert "2026" in result
+
+
+def test_format_email_date_for_prompt_no_leading_zero_on_day() -> None:
+    result = _format_email_date_for_prompt("2026-04-09T10:00:00+00:00")
+    # Should be "9" not "09"
+    assert " 9," in result
+
+
+def test_format_email_date_for_prompt_invalid_returns_raw() -> None:
+    raw = "not a date"
+    assert _format_email_date_for_prompt(raw) == raw
+
+
+# ---------------------------------------------------------------------------
+# _validate_and_format_due_date unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_validate_and_format_due_date_valid_date_returns_utc_noon() -> None:
+    result = _validate_and_format_due_date("2026-05-09", "msg_001")
+    assert result == "2026-05-09T12:00:00.000Z"
+
+
+def test_validate_and_format_due_date_none_returns_none() -> None:
+    assert _validate_and_format_due_date(None, "msg_001") is None
+
+
+def test_validate_and_format_due_date_malformed_returns_none() -> None:
+    assert _validate_and_format_due_date("May 9th", "msg_001") is None
+
+
+def test_validate_and_format_due_date_partial_date_returns_none() -> None:
+    assert _validate_and_format_due_date("2026-05", "msg_001") is None
+
+
+def test_validate_and_format_due_date_non_string_returns_none() -> None:
+    assert _validate_and_format_due_date(20260509, "msg_001") is None
+
+
+def test_validate_and_format_due_date_empty_string_returns_none() -> None:
+    assert _validate_and_format_due_date("", "msg_001") is None
+
+
+def test_validate_and_format_due_date_preserves_date_value() -> None:
+    result = _validate_and_format_due_date("2026-12-31", "msg_001")
+    assert result is not None
+    assert result.startswith("2026-12-31")
+
+
+# ---------------------------------------------------------------------------
+# generate_card_name — LLM success with JSON
+# ---------------------------------------------------------------------------
+
+
+def test_generate_card_name_returns_llm_name_and_source() -> None:
     email = make_email(subject="Re: Q3 Board Deck")
-    name, source = generate_card_name(email, llm_ok("Review Q3 board deck"), PROMPT_TEMPLATE)
+    name, source, due_date = generate_card_name(
+        email, llm_ok("Review Q3 board deck"), PROMPT_TEMPLATE
+    )
     assert name == "Review Q3 board deck"
     assert source == "llm"
 
 
-def test_generate_card_name_llm_source_is_llm() -> None:
+def test_generate_card_name_returns_due_date_from_llm() -> None:
     email = make_email()
-    _, source = generate_card_name(email, llm_ok(), PROMPT_TEMPLATE)
-    assert source == "llm"
+    name, source, due_date = generate_card_name(
+        email, llm_ok("Buy concert tickets", due_date="2026-05-09"), PROMPT_TEMPLATE
+    )
+    assert due_date == "2026-05-09T12:00:00.000Z"
+
+
+def test_generate_card_name_returns_none_for_null_due_date() -> None:
+    email = make_email()
+    name, source, due_date = generate_card_name(
+        email, llm_ok("Review document", due_date=None), PROMPT_TEMPLATE
+    )
+    assert due_date is None
+
+
+def test_generate_card_name_source_propagated_from_llm() -> None:
+    email = make_email()
+    _, source, _ = generate_card_name(
+        email, llm_ok(source="anthropic"), PROMPT_TEMPLATE
+    )
+    assert source == "anthropic"
+
+
+def test_generate_card_name_truncates_long_card_name() -> None:
+    long_name = "A" * 150
+    email = make_email()
+    name, _, _ = generate_card_name(email, llm_ok(long_name), PROMPT_TEMPLATE)
+    assert len(name) <= 100
+
+
+def test_generate_card_name_exactly_100_chars_not_truncated() -> None:
+    exact_name = "B" * 100
+    email = make_email()
+    name, _, _ = generate_card_name(email, llm_ok(exact_name), PROMPT_TEMPLATE)
+    assert len(name) == 100
+
+
+def test_generate_card_name_malformed_due_date_returns_none() -> None:
+    email = make_email()
+    json_text = json.dumps({"card_name": "Do something", "due_date": "May 9th"})
+    name, _, due_date = generate_card_name(
+        email, llm_raw(json_text), PROMPT_TEMPLATE
+    )
+    assert name == "Do something"
+    assert due_date is None
 
 
 def test_generate_card_name_llm_receives_correct_subject() -> None:
-    """Verify the LLM callable receives the email subject."""
     received: list[str] = []
 
     def capturing_llm(subject: str, body: str, template: str):
         received.append(subject)
-        return ("task", "llm")
+        return (json.dumps({"card_name": "task", "due_date": None}), "llm")
 
     email = make_email(subject="My Email Subject")
     generate_card_name(email, capturing_llm, PROMPT_TEMPLATE)
@@ -167,43 +286,29 @@ def test_generate_card_name_llm_receives_correct_subject() -> None:
 
 
 def test_generate_card_name_llm_receives_first_500_chars_of_body() -> None:
-    """Verify the LLM callable receives at most 500 chars of the body."""
     long_body = "X" * 1000
     received_body: list[str] = []
 
     def capturing_llm(subject: str, body: str, template: str):
         received_body.append(body)
-        return ("task", "llm")
+        return (json.dumps({"card_name": "task", "due_date": None}), "llm")
 
     email = make_email(body=long_body)
     generate_card_name(email, capturing_llm, PROMPT_TEMPLATE)
     assert len(received_body[0]) == 500
-    assert received_body[0] == "X" * 500
 
 
-def test_generate_card_name_llm_receives_short_body_unchanged() -> None:
-    short_body = "Short body."
-    received_body: list[str] = []
-
-    def capturing_llm(subject: str, body: str, template: str):
-        received_body.append(body)
-        return ("task", "llm")
-
-    email = make_email(body=short_body)
-    generate_card_name(email, capturing_llm, PROMPT_TEMPLATE)
-    assert received_body[0] == short_body
-
-
-def test_generate_card_name_llm_receives_prompt_template() -> None:
+def test_generate_card_name_prompt_has_email_date_substituted() -> None:
     received_template: list[str] = []
 
     def capturing_llm(subject: str, body: str, template: str):
         received_template.append(template)
-        return ("task", "llm")
+        return (json.dumps({"card_name": "task", "due_date": None}), "llm")
 
-    email = make_email()
+    email = make_email(email_date="2026-03-08T10:00:00+00:00")
     generate_card_name(email, capturing_llm, PROMPT_TEMPLATE)
-    assert received_template[0] == PROMPT_TEMPLATE
+    assert "{{email_date}}" not in received_template[0]
+    assert "2026" in received_template[0]
 
 
 # ---------------------------------------------------------------------------
@@ -213,55 +318,83 @@ def test_generate_card_name_llm_receives_prompt_template() -> None:
 
 def test_generate_card_name_falls_back_when_llm_returns_none() -> None:
     email = make_email(subject="Invoice from supplier")
-    name, source = generate_card_name(email, llm_down(), PROMPT_TEMPLATE)
+    name, source, due_date = generate_card_name(email, llm_down(), PROMPT_TEMPLATE)
     assert name == "Invoice from supplier"
     assert source == "fallback"
+    assert due_date is None
 
 
 def test_generate_card_name_fallback_strips_re_prefix() -> None:
     email = make_email(subject="Re: Q3 Board Deck - Final Review")
-    name, source = generate_card_name(email, llm_down(), PROMPT_TEMPLATE)
+    name, source, _ = generate_card_name(email, llm_down(), PROMPT_TEMPLATE)
     assert name == "Q3 Board Deck - Final Review"
     assert source == "fallback"
 
 
 def test_generate_card_name_fallback_strips_fwd_prefix() -> None:
     email = make_email(subject="Fwd: Invoice attached")
-    name, source = generate_card_name(email, llm_down(), PROMPT_TEMPLATE)
+    name, source, _ = generate_card_name(email, llm_down(), PROMPT_TEMPLATE)
     assert name == "Invoice attached"
     assert source == "fallback"
 
 
 def test_generate_card_name_fallback_strips_fw_prefix() -> None:
     email = make_email(subject="FW: Action required")
-    name, source = generate_card_name(email, llm_down(), PROMPT_TEMPLATE)
+    name, source, _ = generate_card_name(email, llm_down(), PROMPT_TEMPLATE)
     assert name == "Action required"
     assert source == "fallback"
 
 
 def test_generate_card_name_fallback_strips_multiple_prefixes() -> None:
     email = make_email(subject="Re: Fwd: Re: Meeting notes")
-    name, source = generate_card_name(email, llm_down(), PROMPT_TEMPLATE)
+    name, _, _ = generate_card_name(email, llm_down(), PROMPT_TEMPLATE)
     assert name == "Meeting notes"
-    assert source == "fallback"
 
 
-def test_generate_card_name_fallback_source_is_fallback() -> None:
+def test_generate_card_name_fallback_due_date_is_none() -> None:
     email = make_email(subject="Plain subject")
-    _, source = generate_card_name(email, llm_down(), PROMPT_TEMPLATE)
-    assert source == "fallback"
+    _, _, due_date = generate_card_name(email, llm_down(), PROMPT_TEMPLATE)
+    assert due_date is None
 
 
 def test_generate_card_name_fallback_when_llm_raises() -> None:
-    """If the LLM callable raises an exception, fall back gracefully."""
-
     def crashing_llm(subject: str, body: str, template: str):
         raise RuntimeError("Unexpected crash")
 
     email = make_email(subject="Re: Important update")
-    name, source = generate_card_name(email, crashing_llm, PROMPT_TEMPLATE)
+    name, source, due_date = generate_card_name(email, crashing_llm, PROMPT_TEMPLATE)
     assert source == "fallback"
     assert name == "Important update"
+    assert due_date is None
+
+
+def test_generate_card_name_fallback_when_llm_returns_invalid_json() -> None:
+    email = make_email(subject="Invalid JSON test")
+    name, source, due_date = generate_card_name(
+        email, llm_raw("not valid json at all"), PROMPT_TEMPLATE
+    )
+    assert source == "fallback"
+    assert name == "Invalid JSON test"
+    assert due_date is None
+
+
+def test_generate_card_name_fallback_when_card_name_missing_from_json() -> None:
+    email = make_email(subject="Re: Missing field")
+    json_text = json.dumps({"due_date": "2026-05-09"})  # no card_name
+    name, source, due_date = generate_card_name(
+        email, llm_raw(json_text), PROMPT_TEMPLATE
+    )
+    assert source == "fallback"
+    assert name == "Missing field"
+    assert due_date is None
+
+
+def test_generate_card_name_fallback_when_card_name_is_empty_string() -> None:
+    email = make_email(subject="Re: Empty name")
+    json_text = json.dumps({"card_name": "   ", "due_date": None})
+    name, source, _ = generate_card_name(email, llm_raw(json_text), PROMPT_TEMPLATE)
+    assert source == "fallback"
+    assert name == "Empty name"
 
 
 # ---------------------------------------------------------------------------
@@ -283,7 +416,6 @@ def test_build_card_description_header_format() -> None:
     )
     desc = build_card_description(email)
     lines = desc.split("\n")
-    # Line 0: bullet metadata, line 1: blank, line 2: "------", line 3: blank, line 4+: body
     assert lines[0] == '\u2022 See "Q3 Board Deck" email from Alice <alice@example.com> on March 8, 2026'
     assert lines[1] == ""
     assert lines[2] == "------"
@@ -294,7 +426,6 @@ def test_build_card_description_has_blank_line_before_and_after_separator() -> N
     email = make_email()
     desc = build_card_description(email)
     lines = desc.split("\n")
-    # Line 0: "• See ...", line 1: blank, line 2: "------", line 3: blank, line 4+: body
     assert lines[1] == ""
     assert lines[2] == "------"
     assert lines[3] == ""
@@ -305,8 +436,6 @@ def test_build_card_description_body_appears_after_separator() -> None:
     email = make_email(body=body)
     desc = build_card_description(email)
     assert body in desc
-    # Full string: "• See ...\n\n------\n\n[body]"
-    # Body starts immediately after the "\n\n------\n\n" separator.
     sep = "\n\n------\n\n"
     sep_pos = desc.index(sep)
     assert desc[sep_pos + len(sep):].startswith(body)
@@ -332,7 +461,6 @@ def test_build_card_description_no_truncation_when_under_limit() -> None:
 def test_build_card_description_no_truncation_at_exact_limit() -> None:
     email = make_email(subject="S", sender="s@s.com", email_date="2026-01-01T00:00:00", body="B")
     desc = build_card_description(email, max_chars=16384)
-    # Under limit — no truncation notice
     assert "[Email body truncated" not in desc
 
 
@@ -354,9 +482,6 @@ def test_build_card_description_total_length_within_max_chars_after_truncation()
 
 
 def test_build_card_description_truncation_with_custom_max_chars() -> None:
-    # max_chars=300 is large enough for the header ("• See ..." ~76 chars) +
-    # separator ("\n\n------\n\n" = 9 chars) + truncation notice (~75 chars)
-    # = ~160 chars, leaving ~140 chars of body.
     email = make_email(body="Y" * 500)
     desc = build_card_description(email, max_chars=300)
     assert len(desc) <= 300
@@ -371,7 +496,6 @@ def test_build_card_description_truncation_notice_exact_text() -> None:
 
 
 def test_build_card_description_body_prefix_preserved_before_truncation() -> None:
-    """The start of the body should appear in the description even after truncation."""
     body_start = "First paragraph of the email."
     email = make_email(body=body_start + " " + "filler " * 5000)
     desc = build_card_description(email, max_chars=500)

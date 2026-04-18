@@ -245,6 +245,32 @@ def test_create_card_raises_trello_error_when_response_missing_id() -> None:
             create_card(LIST_ID, "Task", "Desc", API_KEY, API_TOKEN)
 
 
+def test_create_card_with_due_date_sends_due_field() -> None:
+    """When due is provided, the 'due' field should be included in the payload."""
+    card_body = json.loads(_load_fixture("trello_card_response.json"))
+    mock_resp = make_response(200, card_body)
+
+    with patch("requests.post", return_value=mock_resp) as mock_post:
+        create_card(
+            LIST_ID, "Task", "Desc", API_KEY, API_TOKEN, due="2026-05-09T12:00:00.000Z"
+        )
+
+    sent_payload = mock_post.call_args[1]["json"]
+    assert sent_payload["due"] == "2026-05-09T12:00:00.000Z"
+
+
+def test_create_card_without_due_date_omits_due_field() -> None:
+    """When due is None (default), the 'due' field should not be in the payload."""
+    card_body = json.loads(_load_fixture("trello_card_response.json"))
+    mock_resp = make_response(200, card_body)
+
+    with patch("requests.post", return_value=mock_resp) as mock_post:
+        create_card(LIST_ID, "Task", "Desc", API_KEY, API_TOKEN)
+
+    sent_payload = mock_post.call_args[1]["json"]
+    assert "due" not in sent_payload
+
+
 def test_create_card_pos_top_ordering_semantics() -> None:
     """Verify that creating cards with pos=top for oldest-first emails
     results in newest email at list top after a batch completes.

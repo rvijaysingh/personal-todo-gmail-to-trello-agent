@@ -196,14 +196,16 @@ def _process_email(
     )
 
     # Step 2 — Generate card name (LLM or fallback)
-    name, source = card_builder.generate_card_name(email, llm_fn, prompt_template)
-    logger.info("Card name (%s): %r", source, name)
+    name, source, due_date = card_builder.generate_card_name(email, llm_fn, prompt_template)
+    logger.info("Card name (%s): %r  due_date: %r", source, name, due_date)
 
     # Step 3 — Build card description
     description = card_builder.build_card_description(
         email, max_chars=ac.trello_description_max_chars
     )
-    card = CardPayload(name=name, description=description, card_name_source=source)
+    card = CardPayload(
+        name=name, description=description, card_name_source=source, due_date=due_date
+    )
 
     # Step 5 — Create Trello card
     try:
@@ -213,6 +215,7 @@ def _process_email(
             card.description,
             gc.trello_api_key,
             gc.trello_api_token,
+            due=card.due_date,
         )
     except TrelloError as exc:
         logger.error(

@@ -21,7 +21,8 @@ class CardPayload:
 
     name: str
     description: str
-    card_name_source: str  # 'llm' or 'fallback'
+    card_name_source: str  # 'anthropic', 'ollama', or 'fallback'
+    due_date: str | None = None  # ISO 8601 UTC datetime string, or None
 
 
 @dataclass

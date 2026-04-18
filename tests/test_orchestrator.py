@@ -86,7 +86,7 @@ _CREATE_CARD = "agent_shared.trello.client.create_card"
 _APPLY_LABEL = "src.gmail_client.apply_label"
 _INSERT = "agent_shared.infra.db.insert_record"
 
-_DEFAULT_CARD_NAME = ("Review the document", "anthropic")
+_DEFAULT_CARD_NAME = ("Review the document", "anthropic", None)
 _DEFAULT_CARD_URL = ("card_abc", "https://trello.com/c/abc")
 
 # Alert patch targets
@@ -262,7 +262,7 @@ def test_process_email_success_passes_list_id_to_create_card() -> None:
 
 def test_process_email_trello_error_returns_failed_status() -> None:
     with ExitStack() as stack:
-        stack.enter_context(patch(_GEN_NAME, return_value=_DEFAULT_CARD_NAME))
+        stack.enter_context(patch(_GEN_NAME, return_value=("Task", "anthropic", None)))
         stack.enter_context(patch(_BUILD_DESC, return_value="desc"))
         stack.enter_context(
             patch(_CREATE_CARD, side_effect=TrelloError("500 error"))
@@ -280,7 +280,7 @@ def test_process_email_trello_error_returns_failed_status() -> None:
 
 def test_process_email_trello_error_inserts_db_record() -> None:
     with ExitStack() as stack:
-        stack.enter_context(patch(_GEN_NAME, return_value=_DEFAULT_CARD_NAME))
+        stack.enter_context(patch(_GEN_NAME, return_value=("Task", "anthropic", None)))
         stack.enter_context(patch(_BUILD_DESC, return_value="desc"))
         stack.enter_context(
             patch(_CREATE_CARD, side_effect=TrelloError("API down"))
@@ -298,7 +298,7 @@ def test_process_email_trello_error_inserts_db_record() -> None:
 
 def test_process_email_trello_error_error_message_in_result() -> None:
     with ExitStack() as stack:
-        stack.enter_context(patch(_GEN_NAME, return_value=_DEFAULT_CARD_NAME))
+        stack.enter_context(patch(_GEN_NAME, return_value=("Task", "anthropic", None)))
         stack.enter_context(patch(_BUILD_DESC, return_value="desc"))
         stack.enter_context(
             patch(_CREATE_CARD, side_effect=TrelloError("Rate limited"))
@@ -339,21 +339,37 @@ def test_process_email_apply_label_failure_preserves_card_url() -> None:
 
 
 def test_process_email_records_anthropic_card_name_source() -> None:
-    _, mocks = _run_process_email(gen_name_rv=("Task name", "anthropic"))
+    _, mocks = _run_process_email(gen_name_rv=("Task name", "anthropic", None))
     _db_path, _email, card_arg, _result = mocks["insert"].call_args[0]
     assert card_arg.card_name_source == "anthropic"
 
 
 def test_process_email_records_ollama_card_name_source() -> None:
-    _, mocks = _run_process_email(gen_name_rv=("Task name", "ollama"))
+    _, mocks = _run_process_email(gen_name_rv=("Task name", "ollama", None))
     _db_path, _email, card_arg, _result = mocks["insert"].call_args[0]
     assert card_arg.card_name_source == "ollama"
 
 
 def test_process_email_records_fallback_card_name_source() -> None:
-    _, mocks = _run_process_email(gen_name_rv=("Task name", "fallback"))
+    _, mocks = _run_process_email(gen_name_rv=("Task name", "fallback", None))
     _db_path, _email, card_arg, _result = mocks["insert"].call_args[0]
     assert card_arg.card_name_source == "fallback"
+
+
+def test_process_email_passes_due_date_to_create_card() -> None:
+    """When generate_card_name returns a due_date, it is passed to create_card."""
+    _, mocks = _run_process_email(
+        gen_name_rv=("Buy concert tickets", "anthropic", "2026-05-09T12:00:00.000Z")
+    )
+    _, kwargs = mocks["create_card"].call_args
+    assert kwargs.get("due") == "2026-05-09T12:00:00.000Z"
+
+
+def test_process_email_no_due_date_passes_none_to_create_card() -> None:
+    """When generate_card_name returns None for due_date, create_card receives due=None."""
+    _, mocks = _run_process_email(gen_name_rv=("Review the document", "anthropic", None))
+    _, kwargs = mocks["create_card"].call_args
+    assert kwargs.get("due") is None
 
 
 # ---------------------------------------------------------------------------
